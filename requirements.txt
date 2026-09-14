@@ -1,0 +1,6 @@
+pymavlink
+PyQt5
+PyQtWebEngine
+matplotlib
+pyserial
+pyinstaller

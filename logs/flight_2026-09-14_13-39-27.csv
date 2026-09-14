@@ -1,0 +1,2 @@
+timestamp,lat,lon,alt,groundspeed,heading,battery,mode,armed
+2026-09-14 13:39:27,-35.3638532,149.1665534,30.005,1.3375111818313599,57,0,AUTO,True

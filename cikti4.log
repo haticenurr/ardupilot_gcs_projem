@@ -1,0 +1,32 @@
+MAVLink okuma dongusu arka planda baslatiliyor...
+[DroneTelemetry] Baglanti kuruluyor: udp:127.0.0.1:14550
+[DroneTelemetry] Heartbeat alindi! (system=1, component=0)
+[STATUSTEXT DEBUG] severity=6 text='Flight plan received'
+[STATUSTEXT DEBUG] severity=6 text='Arming motors'
+[FENCE DEBUG] Waypoint 1: home'a mesafe = 45.3 m (fence yaricapi=80.0)
+[FENCE DEBUG] Waypoint 2: home'a mesafe = 134.5 m (fence yaricapi=80.0)
+[FENCE DEBUG] Waypoint 3: home'a mesafe = 57.2 m (fence yaricapi=80.0)
+[FENCE DEBUG] Gorev basliyor - mesafe hesabi burada yapilamaz (worker thread), MainWindow tarafinda kontrol edilecek
+[STATUSTEXT DEBUG] severity=6 text='Reached command #1'
+[STATUSTEXT DEBUG] severity=6 text='Mission: 2 WP'
+[STATUSTEXT DEBUG] severity=5 text='Fence breach cleared'
+[STATUSTEXT DEBUG] severity=6 text='SIM Hit ground at 0.500877 m/s'
+[STATUSTEXT DEBUG] severity=6 text='Disarming motors'
+MAVLink okuma dongusu arka planda baslatiliyor...
+[DroneTelemetry] Baglanti kuruluyor: udp:127.0.0.1:14550
+[DroneTelemetry] Heartbeat alindi! (system=1, component=0)
+[STATUSTEXT DEBUG] severity=6 text='Flight plan received'
+[STATUSTEXT DEBUG] severity=6 text='Arming motors'
+[FENCE DEBUG] Waypoint 1: home'a mesafe = 50.2 m (fence yaricapi=80.0)
+[FENCE DEBUG] Waypoint 2: home'a mesafe = 124.8 m (fence yaricapi=80.0)
+[FENCE DEBUG] Waypoint 3: home'a mesafe = 135.2 m (fence yaricapi=80.0)
+[FENCE DEBUG] Waypoint 4: home'a mesafe = 34.9 m (fence yaricapi=80.0)
+[FENCE DEBUG] Gorev basliyor - mesafe hesabi burada yapilamaz (worker thread), MainWindow tarafinda kontrol edilecek
+[STATUSTEXT DEBUG] severity=6 text='Reached command #1'
+[STATUSTEXT DEBUG] severity=6 text='Mission: 2 WP'
+[STATUSTEXT DEBUG] severity=5 text='Circle fence breached'
+[STATUSTEXT DEBUG] severity=6 text='Manual recovery started'
+[STATUSTEXT DEBUG] severity=5 text='Fence breach cleared'
+[STATUSTEXT DEBUG] severity=6 text='SIM Hit ground at 0.501018 m/s'
+[STATUSTEXT DEBUG] severity=6 text='Disarming motors'
+Pencere kapatiliyor...
