@@ -26,7 +26,6 @@ from core.mission_analysis import (
     hata_sayisi,
     mesafe_metni,
     ozet_metni,
-    sure_metni,
 )
 from ui.pattern_dialog import MOD_ARAMA, MOD_HARITALAMA, PatternDialog
 

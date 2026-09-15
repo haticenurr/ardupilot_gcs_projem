@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt5.QtWidgets import QDialog, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from gui_harness import qt_app
 

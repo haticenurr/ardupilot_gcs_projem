@@ -16,8 +16,6 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pymavlink import mavutil
-
 from core.drone_telemetry import DroneTelemetry, _RTL_ALT_PARAMS, _FAILSAFE_PARAMS
 from fake_vehicle import FakeVehicle, free_udp_port
 

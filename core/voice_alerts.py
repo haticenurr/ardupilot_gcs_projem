@@ -19,7 +19,6 @@ Tasarim kurallari:
   - TTS bulunmayan sistemde uygulama sessizce calismaya devam eder.
 """
 
-import os
 import queue
 import shutil
 import subprocess

@@ -94,7 +94,9 @@ class ParameterEditorDialog(QDialog):
         """
         name = data.get("param_id", "")
         value = data.get("value", 0.0)
-        index = data.get("param_index")
+        # NOT: ilerleme param_index yerine indirilen BENZERSIZ ad sayisina
+        # gore hesaplanir (asagida); FC ayni parametreyi birden fazla kez
+        # gonderebildigi icin index guvenilir bir sayac degildir.
         count = data.get("param_count")
         param_type = data.get("param_type", 9)
 

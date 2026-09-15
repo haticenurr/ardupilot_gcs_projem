@@ -8,7 +8,6 @@ bu panel ayni mesajlari zaman damgasiyla kalici olarak listeler.
 
 from datetime import datetime
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QPushButton, QHBoxLayout
-from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 

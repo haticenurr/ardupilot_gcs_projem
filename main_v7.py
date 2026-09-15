@@ -721,7 +721,9 @@ class MainWindow(QMainWindow):
         self.current_groundspeed = None
         self.current_heading = None
         self.current_battery = None
-        self.flight_logger = FlightLogger(log_dir=logs_dir())
+        self.flight_logger = FlightLogger(
+            log_dir=logs_dir(), on_error=self._on_flight_log_error
+        )
         # Kritik uyarilarin sesli anonsu. Sistemde TTS yoksa available
         # False olur ve ozellik sessizce devre disi kalir.
         self.voice = VoiceAlerts(enabled=True)
@@ -1453,6 +1455,15 @@ class MainWindow(QMainWindow):
         else:
             self.card_home_dist.set_value("--")
 
+    def _on_flight_log_error(self, mesaj: str):
+        """Kaydedici bir disk/izin hatasi bildirdiginde cagrilir. Ucus
+        devam eder; yalnizca kayit tutulamaz."""
+        self.event_log_panel.add_event(mesaj, success=False)
+        self.show_transient_status(mesaj, 8000, success=False)
+        self.voice.say(
+            "Ucus kaydi tutulamiyor", key="kayit_hatasi", min_interval_s=60
+        )
+
     def _refresh_battery_cards(self):
         """Akim / tuketilen / kalan sure kartlarini ve eve donus uyarisini
         gunceller. Eksik veriyle tahmin URETILMEZ; bilinmeyen degerler
@@ -2070,8 +2081,14 @@ class MainWindow(QMainWindow):
 
             if just_armed:
                 self.flight_logger.stop()
-                self.flight_logger.start(custom_name=self.flight_name_input.text())
-                self.event_log_panel.add_event("Drone ARM edildi — ucus kaydi basladi", success=True)
+                kayit_acildi = self.flight_logger.start(
+                    custom_name=self.flight_name_input.text()
+                )
+                self.event_log_panel.add_event(
+                    "Drone ARM edildi — ucus kaydi basladi" if kayit_acildi
+                    else "Drone ARM edildi — UCUS KAYDI ACILAMADI",
+                    success=bool(kayit_acildi),
+                )
                 self.voice.say("Motorlar armed", key="arm", min_interval_s=3)
                 self.replay_panel.refresh_file_list()
                 self._start_flight_timer()
@@ -2641,6 +2658,10 @@ class MainWindow(QMainWindow):
         battery = data["battery"]
         mode = data["mode"]
 
+        # Kayittaki ucus modu okunuyordu ama hicbir yerde gosterilmiyordu.
+        # "TEKRAR" oneki, canli mod ile karistirilmasini onler.
+        self._style_badge(self.badge_mode, f"TEKRAR: {mode}", "#cba6f7")
+
         self.card_alt.set_value(f"{alt:.1f}")
         self.card_gs.set_value(f"{groundspeed:.1f}")
         self.card_hdg.set_value(f"{int(heading):03d}")
@@ -2720,6 +2741,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         print("Pencere kapatiliyor...")
         self.voice.stop()
+        # Acik CSV dosyasi tamponu diske yazilmadan kalmasin.
+        self.flight_logger.stop()
         if self.worker is not None:
             self._disconnect_worker(self.worker)
             self.worker.stop()
