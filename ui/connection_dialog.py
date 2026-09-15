@@ -2,7 +2,11 @@
 connection_dialog.py
 ---------------------
 Baglanti Ayarlari penceresi.
-SITL/UDP ile gercek donanim (seri port) arasinda secim yapmayi saglar.
+Ag baglantisi (UDP/TCP) ile gercek donanim (seri port) arasinda secim
+yapmayi saglar.
+
+TCP, ArduPilot SITL'i MAVProxy olmadan dogrudan calistirinca gerekir:
+SITL kendi TCP sunucusunu 5760 portunda acar.
 """
 
 from PyQt5.QtWidgets import (
@@ -30,18 +34,25 @@ class ConnectionDialog(QDialog):
         # --- Baglanti tipi secici ---
         layout.addWidget(QLabel("Baglanti Tipi:"))
         self.type_combo = QComboBox()
-        self.type_combo.addItem("SITL / UDP (Simulasyon)", "udp")
+        self.type_combo.addItem("SITL / Ag (UDP veya TCP)", "net")
         self.type_combo.addItem("Gercek Donanim / Seri Port", "serial")
         layout.addWidget(self.type_combo)
 
         # --- UDP sayfasi ---
         self.udp_page = QWidget()
         udp_layout = QVBoxLayout(self.udp_page)
-        udp_layout.addWidget(QLabel("UDP Adresi (ornek: udp:127.0.0.1:14550):"))
+        udp_layout.addWidget(QLabel("Adres:"))
         self.udp_combo = QComboBox()
         self.udp_combo.setEditable(True)
         self.udp_combo.addItem("udp:127.0.0.1:14550")
+        self.udp_combo.addItem("tcp:127.0.0.1:5760")
         udp_layout.addWidget(self.udp_combo)
+        ipucu = QLabel(
+            "udp:127.0.0.1:14550 — MAVProxy/sim_vehicle.py uzerinden SITL\n"
+            "tcp:127.0.0.1:5760 — SITL ikili dosyasina dogrudan baglanti"
+        )
+        ipucu.setStyleSheet("color: #6c7086; font-size: 11px;")
+        udp_layout.addWidget(ipucu)
 
         # --- Seri port sayfasi ---
         self.serial_page = QWidget()
@@ -71,7 +82,12 @@ class ConnectionDialog(QDialog):
         )
 
         # --- Mevcut baglantiyi baslangic degeri olarak yansit ---
-        if current_connection_string and not current_connection_string.startswith("udp"):
+        # DIKKAT: tcp: ile baslayan adresler de AG baglantisidir. Eski kod
+        # yalnizca "udp" onekine bakiyordu, bu yuzden bir TCP adresi
+        # (SITL'e dogrudan baglanti) seri port sayfasina dusuyordu.
+        if current_connection_string and not current_connection_string.startswith(
+            ("udp", "tcp")
+        ):
             self.type_combo.setCurrentIndex(1)
             self.stack.setCurrentIndex(1)
         elif current_connection_string:
@@ -102,7 +118,7 @@ class ConnectionDialog(QDialog):
             self.port_combo.addItem(f"{p.device} ({p.description})", p.device)
 
     def _on_connect_clicked(self):
-        if self.type_combo.currentData() == "udp":
+        if self.type_combo.currentData() == "net":
             self._result_connection_string = self.udp_combo.currentText().strip()
         else:
             port = self.port_combo.currentData()

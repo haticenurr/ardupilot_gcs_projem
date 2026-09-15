@@ -55,14 +55,47 @@ Ust cubuktaki rozet birkac saniye icinde **BAGLI** olmalidir.
 
 ## Yol B — ArduPilot SITL ile (gercekci)
 
-SITL kurulumu: https://ardupilot.org/dev/docs/sitl-simulator-software-in-the-loop.html
+### Kurulum (bir kereye mahsus)
 
-**Terminal 1:**
 ```bash
-sim_vehicle.py -v ArduCopter --map --console
+cd /Applications/projeler
+git clone --depth 1 --recurse-submodules --shallow-submodules \
+    https://github.com/ArduPilot/ardupilot.git
+
+# Derleme araclari icin ayri bir sanal ortam
+python3 -m venv ardupilot-venv
+ardupilot-venv/bin/python -m pip install "empy==3.3.4" pexpect future pymavlink
+
+cd ardupilot
+../ardupilot-venv/bin/python ./waf configure --board sitl
+../ardupilot-venv/bin/python ./waf copter
 ```
 
-**Terminal 2:**
+Sonuc: `ardupilot/build/sitl/bin/arducopter` (~5 MB). Derleme birkac dakika surer.
+
+> **MAVProxy kurulmasina gerek yok.** `pip install MAVProxy`, Python 3.9'da
+> hazir wheel'i olmayan `fastcrc` paketini Rust ile derlemeye calisir ve
+> takilir. Asagidaki calistirma bicimi MAVProxy'siz calisir.
+
+### Calistirma
+
+**Terminal 1 — SITL:**
+```bash
+cd /Applications/projeler/ardupilot
+./build/sitl/bin/arducopter --model quad \
+    --serial0 tcp:5760 \
+    --serial1 udpclient:127.0.0.1:14550 \
+    --defaults Tools/autotest/default_params/copter.parm
+```
+
+Iki secenek de onemlidir:
+
+| Secenek | Neden |
+|---|---|
+| `--serial0 tcp:5760` | `:wait` **eklenmez**. Varsayilan `tcp:5760:wait` oldugu icin SITL, 5760'a biri baglanana kadar bekler ve hicbir telemetri yayinlamaz. Ayrica her yeni TCP baglantisinda kendini sifirlar — bu, kalibrasyon gibi cok adimli islemleri yarida keser. |
+| `--serial1 udpclient:127.0.0.1:14550` | Projenin varsayilan adresinde ayri ve kararli bir MAVLink akisi acar. |
+
+**Terminal 2 — yer istasyonu:**
 ```bash
 cd /Applications/projeler/proje
 .venv/bin/python main_v7.py
@@ -70,6 +103,26 @@ cd /Applications/projeler/proje
 
 SITL ile gorev yukleme, otonom ucus sihirbazi, kalibrasyon ve parametre
 yazma islemlerinin tamami calisir.
+
+### Protokol dogrulama betigi
+
+SITL calisirken, gonderdigimiz komutlara gercek otopilotun verdigi yaniti
+uctan uca kontrol eder:
+
+```bash
+.venv/bin/python tests/sitl_dogrula.py
+```
+
+Beklenen: **18/18 kontrol gecti**. Telemetri cozumlemesi, RTL irtifa
+parametresi, gorev yukleme/indirme turu, ivmeolcer protokol akisi ve
+pusula kalibrasyonu ilerleme mesajlari dogrulanir.
+
+> **SITL siniri:** ivmeolcer kalibrasyonunun 6 pozisyonu SITL'de
+> TAMAMLANAMAZ, cunku simulasyondaki arac fiziksel olarak cevrilemez.
+> 2. pozisyonda ornek yanlis olur ve FC `Calibration FAILED` bildirir.
+> Bu bir hata degildir; betik de bunu boyle bekler. Dogrulanan sey
+> protokol akisidir (FC pozisyon istiyor -> GCS yanitliyor -> FC bir
+> sonrakini istiyor).
 
 > SITL `RADIO_STATUS` mesaji **uretmez** — bu yuzden SINYAL karti `--`
 > kalir. Bu bir hata degildir; gercek telemetri radyosunda dolar.
@@ -149,7 +202,9 @@ Ust cubuk → **Kalibrasyon**. Uc sekme vardir: Pusula, Ivmeolcer, Diger.
   eksende cevirin, ilerleme cubugu dolar. Bitince `KABUL ET VE KAYDET`
   aktiflesir. **Kabul etmeden otopilota yazilmaz** (autosave kapali).
 - **Ivmeolcer (Yol B gerekir):** 6 pozisyon sirayla istenir; her
-  pozisyonda `BU POZISYONDAYIM → DEVAM`.
+  pozisyonda `BU POZISYONDAYIM → DEVAM`. Hangi pozisyonun istendigini
+  otopilot bildirir (`MAV_CMD_ACCELCAL_VEHICLE_POS`), sihirbaz ona gore
+  senkronlanir.
 
 ### 3. Disa aktarma
 

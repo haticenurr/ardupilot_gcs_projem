@@ -27,11 +27,22 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from core.drone_telemetry import ACCEL_CAL_STEPS, MAG_CAL_STATUS_TEXTS
+from core.drone_telemetry import (
+    ACCEL_CAL_POS_FAILED,
+    ACCEL_CAL_POS_SUCCESS,
+    ACCEL_CAL_STEPS,
+    MAG_CAL_STATUS_TEXTS,
+)
 
-# FC'nin ivmeolcer adimlarinda gonderdigi STATUSTEXT'ten pozisyonu
-# cikarmak icin. Sihirbaz adimlari kendi sirasiyla surer; bu esleme FC ile
-# adim numarasini SENKRON tutmak icindir (orn. FC bir adimi tekrar isterse).
+# FC'nin ivmeolcer adimlarinda gonderdigi STATUSTEXT'ten pozisyonu cikarmak
+# icin YEDEK esleme.
+#
+# ASIL kanal COMMAND_LONG / MAV_CMD_ACCELCAL_VEHICLE_POS'tur
+# (on_accel_position_request). ArduPilot kaynagi (AP_AccelCal.cpp)
+# gcs_vehicle_position() icinde ilk yanitimizda _use_gcs_snoop'u kapatir,
+# yani "Place vehicle ..." metinleri SADECE ilk adimda gelir. Bu esleme
+# eski/snoop davranisi ve ilk adim icin korunur.
+#
 # Sira onemli: "nose down" / "nose up" daha genel anahtarlardan once gelir.
 _POS_KEYWORDS = (
     ("nose down", 4),
@@ -399,6 +410,34 @@ class CalibrationDialog(QDialog):
             self.lbl_accel_talimat.setText("Tum pozisyonlar gonderildi, sonuc bekleniyor...")
         else:
             self._adim_goster(self._accel_adim)
+
+    def on_accel_position_request(self, data: dict):
+        """FC'nin COMMAND_LONG / MAV_CMD_ACCELCAL_VEHICLE_POS istegi.
+
+        Ivmeolcer kalibrasyonunda pozisyonun ASIL bildirim kanali budur;
+        param1 istenen pozisyonu (1..6) ya da sonucu tasir."""
+        if not self._accel_calisiyor:
+            return
+        pozisyon = int(data.get("position", 0))
+
+        if pozisyon == ACCEL_CAL_POS_SUCCESS:
+            self._accel_bitir("Ivmeolcer kalibrasyonu BASARILI", True)
+            return
+        if pozisyon == ACCEL_CAL_POS_FAILED:
+            self._accel_bitir(
+                "Ivmeolcer kalibrasyonu BASARISIZ — araci istenen pozisyonda "
+                "sabit tutup tekrar deneyin",
+                False,
+            )
+            return
+
+        for i, (kod, _b, _t) in enumerate(ACCEL_CAL_STEPS):
+            if kod == pozisyon and i != self._accel_adim:
+                self._accel_adim = i
+                self._adim_goster(i)
+                self.btn_accel_next.setEnabled(True)
+                self.mesaj_ekle(f"FC {i + 1}. pozisyonu istiyor")
+                break
 
     def _accel_bitir(self, metin: str, basarili: bool):
         self._accel_calisiyor = False

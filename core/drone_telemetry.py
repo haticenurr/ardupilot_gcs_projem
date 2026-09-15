@@ -76,8 +76,8 @@ _SENSOR_BITS = {
 # Dairesel geofence icin okunacak FC parametreleri.
 _FENCE_PARAMS = ["FENCE_ENABLE", "FENCE_RADIUS", "FENCE_ALT_MAX"]
 
-# RTL irtifasi: ArduPilot 4.5+ bu ayari RTL_ALT_M adiyla ve METRE cinsinden
-# tutar; daha eski surumlerde ad RTL_ALT'tir ve birim SANTIMETREDIR. Hangi
+# RTL irtifasi: ArduPilot 4.7 (Ocak 2026) bu ayari RTL_ALT_M adiyla ve METRE
+# cinsinden tutar; daha eski surumlerde ad RTL_ALT'tir ve birim SANTIMETREDIR. Hangi
 # firmware'e bagli oldugumuzu onceden bilemedigimiz icin iki adi da istiyor
 # ve iki adi da (her birini kendi biriminde) yaziyoruz: FC tanimadigi
 # parametre adini sessizce yok sayar, taniyani gunceller. Tek ada guvenmek,
@@ -116,6 +116,7 @@ _TELEMETRY_TYPES = [
     "MAG_CAL_PROGRESS",
     "MAG_CAL_REPORT",
     "RADIO_STATUS",
+    "COMMAND_LONG",
 ]
 
 # Telemetri radyosunun (SiK vb.) sinyal gucu 0-255 araliginda raporlanir.
@@ -142,6 +143,16 @@ MAG_CAL_STATUS_TEXTS = {
 # Ivmeolcer kalibrasyonu 6 pozisyonda yapilir. ArduPilot pozisyonlari bu
 # sirayla ister; her adimda STATUSTEXT ile sorar ve GCS'in
 # MAV_CMD_ACCELCAL_VEHICLE_POS gondermesini bekler.
+# Ivmeolcer kalibrasyonunda FC, istedigi pozisyonu GCS'e COMMAND_LONG /
+# MAV_CMD_ACCELCAL_VEHICLE_POS ile bildirir (param1 = pozisyon). Bu, ASIL
+# kanaldir: ArduPilot kaynagindaki AP_AccelCal::gcs_vehicle_position()
+# ilk yanitimizda _use_gcs_snoop'u KAPATIR, yani "Place vehicle ..."
+# STATUSTEXT'leri ilk adimdan sonra GELMEZ. Yalnizca STATUSTEXT'e
+# guvenen bir sihirbaz, FC'nin hangi pozisyonu istedigini ikinci adimdan
+# itibaren ogrenemez.
+ACCEL_CAL_POS_SUCCESS = 16777215
+ACCEL_CAL_POS_FAILED = 16777216
+
 ACCEL_CAL_STEPS = (
     (1, "DUZ (level)", "Araci duz, yatay bir zemine koyun."),
     (2, "SOL YAN", "Araci SOL yani uzerine yatirin."),
@@ -338,6 +349,16 @@ class DroneTelemetry:
                 "param_count": int(msg.param_count),
                 "param_type": int(msg.param_type),
             }
+        elif msg_type == "COMMAND_LONG":
+            # FC'nin GCS'e gonderdigi tek komut ivmeolcer pozisyon
+            # istegidir; digerleri bizi ilgilendirmez.
+            if int(msg.command) != mavutil.mavlink.MAV_CMD_ACCELCAL_VEHICLE_POS:
+                return None
+            return {
+                "type": "ACCEL_CAL_POSITION",
+                "position": int(msg.param1),
+            }
+
         elif msg_type == "MAG_CAL_PROGRESS":
             return {
                 "type": "MAG_CAL_PROGRESS",

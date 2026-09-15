@@ -155,6 +155,16 @@ class FakeVehicle:
             0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0,
         )
 
+    def send_accel_cal_position_request(self, position):
+        """FC'nin GCS'ten pozisyon istemesi: COMMAND_LONG /
+        MAV_CMD_ACCELCAL_VEHICLE_POS. Ivmeolcer kalibrasyonunda pozisyonun
+        ASIL bildirim kanali budur (STATUSTEXT sadece ilk adimda gelir)."""
+        self.conn.mav.command_long_send(
+            255, 0,
+            mavutil.mavlink.MAV_CMD_ACCELCAL_VEHICLE_POS,
+            0, float(position), 0, 0, 0, 0, 0, 0,
+        )
+
     def send_statustext(self, text, severity=6):
         self.conn.mav.statustext_send(
             severity, text.encode("utf-8")[:50].ljust(50, b"\x00")

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pymavlink import mavutil
 
+from core.drone_telemetry import ACCEL_CAL_POS_FAILED, ACCEL_CAL_POS_SUCCESS
 from fake_vehicle import FakeVehicle, free_udp_port
 from gui_harness import boot_gcs, pump
 
@@ -148,6 +149,40 @@ class CalibrationTest(unittest.TestCase):
         self.vehicle.send_statustext("Place vehicle nose DOWN and press any key")
         pump(1.5, until=lambda: self.dialog._accel_adim == 3)
         self.assertEqual(self.dialog._accel_adim, 3, "NOSEDOWN adimina senkronlanmadi")
+
+    def test_fc_pozisyon_istegi_adimi_senkronlar(self):
+        """ASIL kanal: FC istedigi pozisyonu COMMAND_LONG /
+        ACCELCAL_VEHICLE_POS ile bildirir. ArduPilot ilk yanitimizdan sonra
+        'Place vehicle ...' STATUSTEXT'lerini KESER, bu yuzden sihirbaz
+        yalnizca STATUSTEXT'e guvenemez."""
+        self.dialog.btn_accel_start.click()
+        pump(0.3)
+        self.assertEqual(self.dialog._accel_adim, 0)
+
+        self.vehicle.send_accel_cal_position_request(3)  # SAG YAN
+        pump(2.0, until=lambda: self.dialog._accel_adim == 2)
+        self.assertEqual(
+            self.dialog._accel_adim, 2, "FC pozisyon istegi adimi senkronlamadi"
+        )
+        self.assertTrue(self.dialog.btn_accel_next.isEnabled())
+
+    def test_fc_basari_kodu_sihirbazi_bitirir(self):
+        self.dialog.btn_accel_start.click()
+        pump(0.3)
+        self.vehicle.send_accel_cal_position_request(ACCEL_CAL_POS_SUCCESS)
+        pump(2.0, until=lambda: not self.dialog._accel_calisiyor)
+        self.assertFalse(self.dialog._accel_calisiyor)
+        self.assertIn("BASARILI", self.dialog.lbl_accel_talimat.text())
+
+    def test_fc_hata_kodu_sihirbazi_bitirir(self):
+        """SITL'de gercekten gorulen durum: arac fiziksel olarak
+        cevrilemedigi icin FC 16777216 (FAILED) gonderir."""
+        self.dialog.btn_accel_start.click()
+        pump(0.3)
+        self.vehicle.send_accel_cal_position_request(ACCEL_CAL_POS_FAILED)
+        pump(2.0, until=lambda: not self.dialog._accel_calisiyor)
+        self.assertFalse(self.dialog._accel_calisiyor)
+        self.assertIn("BASARISIZ", self.dialog.lbl_accel_talimat.text())
 
     def test_basari_mesaji_sihirbazi_bitirir(self):
         self.dialog.btn_accel_start.click()

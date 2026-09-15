@@ -92,6 +92,26 @@ pasif ve uyari gosterilir.
 dogru komut kimlikleri/parametreleri ve `MAG_CAL_PROGRESS` cozumlemesi
 dogrulanir.
 
+`tests/sitl_dogrula.py` — GERCEK ArduPilot SITL'e karsi protokol akisini
+dogrular (18/18 gecer). Bkz. TEST_REHBERI.md.
+
+### SITL ile bulunan ve duzeltilen sorun
+
+Sihirbazin ilk hali, FC'nin istedigi pozisyonu `STATUSTEXT`
+("Place vehicle level and press any key.") metninden cikariyordu. Gercek
+ArduPilot'a karsi calistirinca goruldu ki bu YANLIS kanal:
+
+`AP_AccelCal::gcs_vehicle_position()` GCS'ten ilk yaniti alir almaz
+`_use_gcs_snoop` bayragini KAPATIR — yani "Place vehicle ..." metinleri
+**yalnizca ilk adimda** gelir. Sonraki pozisyonlar GCS'e
+`COMMAND_LONG` / `MAV_CMD_ACCELCAL_VEHICLE_POS` ile bildirilir
+(`param1` = pozisyon; 16777215 = basarili, 16777216 = basarisiz).
+
+Duzeltme: `COMMAND_LONG` cozumlenip `ACCEL_CAL_POSITION` olarak sihirbaza
+iletiliyor; STATUSTEXT yedek kanal olarak korundu. Sabit 1-6 sirasi zaten
+yedek olarak tasarlanmisti, bu yuzden sihirbaz eski haliyle de calisiyordu
+— ama FC'nin hangi pozisyonu istedigini bilmiyordu.
+
 ---
 
 ## 3. KML / .waypoints Disa Aktarma `[x]`

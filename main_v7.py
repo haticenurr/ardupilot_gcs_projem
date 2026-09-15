@@ -1360,7 +1360,7 @@ class MainWindow(QMainWindow):
         if not self.worker or not self.connected:
             self.show_transient_status("Baglanti yok: RTL irtifasi gonderilemedi", 3000, success=False)
             return
-        # NOT: ArduPilot 4.5+ bu ayari RTL_ALT_M (metre) adiyla tutar; daha
+        # NOT: ArduPilot 4.7 (Ocak 2026) bu ayari RTL_ALT_M (metre) adiyla tutar; daha
         # eski surumlerde ad RTL_ALT ve birim SANTIMETREDIR. Yalnizca birine
         # yazmak, digerini calistiran FC'de ayarin sessizce kaybolmasina yol
         # aciyordu - worker artik iki adi da kendi biriminde yaziyor.
@@ -1921,6 +1921,10 @@ class MainWindow(QMainWindow):
                         )                
             if self.param_editor_dialog is not None:
                 self.param_editor_dialog.on_param_received(data)
+        elif msg_type == "ACCEL_CAL_POSITION":
+            if self.calibration_dialog is not None:
+                self.calibration_dialog.on_accel_position_request(data)
+
         elif msg_type == "MAG_CAL_PROGRESS":
             if self.calibration_dialog is not None:
                 self.calibration_dialog.on_mag_progress(data)
