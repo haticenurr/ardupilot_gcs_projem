@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Sanal ortamlar
+.venv/
+venv/
+env/
+
+# Ucus kayitlari ve calisma ciktilari (kullaniciya ozel veri, repoya girmez)
+logs/
+cikti*.log
+ucus_ozeti_rapor.txt
+
+# PyInstaller ciktilari (gcs.spec repoda kalir)
+build/
+dist/
+
+# Editor / isletim sistemi
+.vscode/
+.idea/
+.DS_Store
+
+# Disa aktarilan dosyalar (kullaniciya ozel cikti)
+*.waypoints
+*.kml

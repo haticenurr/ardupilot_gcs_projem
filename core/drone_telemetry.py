@@ -76,9 +76,88 @@ _SENSOR_BITS = {
 # Dairesel geofence icin okunacak FC parametreleri.
 _FENCE_PARAMS = ["FENCE_ENABLE", "FENCE_RADIUS", "FENCE_ALT_MAX"]
 
+# RTL irtifasi: ArduPilot 4.5+ bu ayari RTL_ALT_M adiyla ve METRE cinsinden
+# tutar; daha eski surumlerde ad RTL_ALT'tir ve birim SANTIMETREDIR. Hangi
+# firmware'e bagli oldugumuzu onceden bilemedigimiz icin iki adi da istiyor
+# ve iki adi da (her birini kendi biriminde) yaziyoruz: FC tanimadigi
+# parametre adini sessizce yok sayar, taniyani gunceller. Tek ada guvenmek,
+# digerini calistiran FC'de ayarin sessizce kaybolmasina - kullanici RTL
+# irtifasini ayarladigini sanirken aracin eski irtifada donmesine - yol
+# aciyordu.
+_RTL_ALT_PARAMS = (
+    ("RTL_ALT_M", 1.0),    # deger metre
+    ("RTL_ALT", 100.0),    # deger santimetre
+)
+
+# Failsafe panelinde gosterilecek FC parametreleri.
+# DIKKAT: Bu liste MODUL duzeyinde durmalidir. Sinif govdesinde tanimlanan
+# isimler metot govdelerinden GORUNMEZ (Python kapsam kurali); liste sinif
+# niteligi olarak durdugu surece request_failsafe_params() her cagrildiginda
+# NameError firlatiyor, bu yuzden RTL/pil failsafe degerleri arayuze hic
+# gelmiyordu.
+_FAILSAFE_PARAMS = [name for name, _ in _RTL_ALT_PARAMS] + [
+    "FS_BATT_ENABLE",
+    "BATT_LOW_VOLT",
+]
+
+# get_telemetry_data() ile _decode() ayni mesaj kumesini paylasir.
+_TELEMETRY_TYPES = [
+    "HEARTBEAT",
+    "ATTITUDE",
+    "GLOBAL_POSITION_INT",
+    "VFR_HUD",
+    "SYS_STATUS",
+    "GPS_RAW_INT",
+    "MISSION_CURRENT",
+    "HOME_POSITION",
+    "EKF_STATUS_REPORT",
+    "STATUSTEXT",
+    "PARAM_VALUE",
+    "MAG_CAL_PROGRESS",
+    "MAG_CAL_REPORT",
+    "RADIO_STATUS",
+]
+
+# Telemetri radyosunun (SiK vb.) sinyal gucu 0-255 araliginda raporlanir.
+# Yuzdeye cevirmek icin kullanilan olcek. SITL bu mesaji URETMEZ; veri
+# gelmediginde gosterge "--" kalmalidir.
+RSSI_MAX = 255.0
+
+# --- Kalibrasyon ---------------------------------------------------------
+# Pusula kalibrasyonu asenkron yurur: GCS baslatir, FC ilerlemeyi
+# MAG_CAL_PROGRESS ile bildirir, bitince MAG_CAL_REPORT gonderir. Sonuc
+# autosave=0 ile baslatildiginda kullanici ACCEPT gonderene kadar
+# kaydedilmez - sihirbazin "Kabul Et" adimi budur.
+MAG_CAL_STATUS_TEXTS = {
+    0: "Baslamadi",
+    1: "Baslamayi bekliyor",
+    2: "1. asama: aracı her yone cevirin",
+    3: "2. asama: cevirmeye devam edin",
+    4: "Basarili",
+    5: "Basarisiz",
+    6: "Hatali yonelim (arac yanlis cevrildi)",
+    7: "Hatali yaricap (manyetik parazit olabilir)",
+}
+
+# Ivmeolcer kalibrasyonu 6 pozisyonda yapilir. ArduPilot pozisyonlari bu
+# sirayla ister; her adimda STATUSTEXT ile sorar ve GCS'in
+# MAV_CMD_ACCELCAL_VEHICLE_POS gondermesini bekler.
+ACCEL_CAL_STEPS = (
+    (1, "DUZ (level)", "Araci duz, yatay bir zemine koyun."),
+    (2, "SOL YAN", "Araci SOL yani uzerine yatirin."),
+    (3, "SAG YAN", "Araci SAG yani uzerine yatirin."),
+    (4, "BURUN ASAGI", "Aracin burnunu ASAGI bakacak sekilde dikin."),
+    (5, "BURUN YUKARI", "Aracin burnunu YUKARI bakacak sekilde dikin."),
+    (6, "SIRT USTU", "Araci ters cevirin (sirt ustu)."),
+)
+
 
 class DroneTelemetry:
     def __init__(self, connection_string="udp:127.0.0.1:14550"):
+        # Uzun protokol islemleri (mission/fence upload-download, ACK
+        # bekleme) sirasinda yakalanan telemetri buraya iletilir; worker
+        # bunu kendi _publish() metoduna baglar.
+        self.telemetry_sink = None
         print(f"[DroneTelemetry] Baglanti kuruluyor: {connection_string}")
         # ConnectionDialog seri port secildiginde "PORT,BAUD" formatinda
         # bir string uretir (orn. "/dev/ttyUSB0,57600"). pymavlink'in
@@ -166,25 +245,15 @@ class DroneTelemetry:
           - MISSION_CURRENT     -> seq (hedeflenen waypoint index'i)
           - HOME_POSITION       -> lat, lon, alt
         """
-        msg = self.master.recv_match(
-            type=[
-                "HEARTBEAT",
-                "ATTITUDE",
-                "GLOBAL_POSITION_INT",
-                "VFR_HUD",
-                "SYS_STATUS",
-                "GPS_RAW_INT",
-                "MISSION_CURRENT",
-                "HOME_POSITION",
-                "EKF_STATUS_REPORT",
-                "STATUSTEXT",
-                "PARAM_VALUE",
-            ],
-            blocking=False,
-        )
+        msg = self.master.recv_match(type=_TELEMETRY_TYPES, blocking=False)
         if msg is None:
             return None
+        return self._decode(msg)
 
+    def _decode(self, msg):
+        """Tek bir MAVLink mesajini GUI'nin bekledigi dict'e cevirir;
+        ilgilenmedigimiz turler icin None doner. get_telemetry_data() ile
+        _emit_side_telemetry() ayni cozumlemeyi paylassin diye ayri metot."""
         msg_type = msg.get_type()
 
         if msg_type == "HEARTBEAT":
@@ -269,6 +338,38 @@ class DroneTelemetry:
                 "param_count": int(msg.param_count),
                 "param_type": int(msg.param_type),
             }
+        elif msg_type == "MAG_CAL_PROGRESS":
+            return {
+                "type": "MAG_CAL_PROGRESS",
+                "compass_id": int(msg.compass_id),
+                "cal_status": int(msg.cal_status),
+                "completion_pct": int(msg.completion_pct),
+                "attempt": int(msg.attempt),
+            }
+
+        elif msg_type == "MAG_CAL_REPORT":
+            return {
+                "type": "MAG_CAL_REPORT",
+                "compass_id": int(msg.compass_id),
+                "cal_status": int(msg.cal_status),
+                "autosaved": bool(msg.autosaved),
+                "fitness": float(msg.fitness),
+            }
+
+        elif msg_type == "RADIO_STATUS":
+            # rssi: yerel (GCS tarafi) alicinin sinyali,
+            # remrssi: uzak (arac tarafi) alicinin sinyali.
+            return {
+                "type": "RADIO_STATUS",
+                "rssi": int(msg.rssi),
+                "remrssi": int(msg.remrssi),
+                "noise": int(msg.noise),
+                "remnoise": int(msg.remnoise),
+                "rxerrors": int(msg.rxerrors),
+                "rssi_pct": round(int(msg.rssi) / RSSI_MAX * 100),
+                "remrssi_pct": round(int(msg.remrssi) / RSSI_MAX * 100),
+            }
+
         elif msg_type == "GPS_RAW_INT":
             return {
                 "type": "GPS_RAW_INT",
@@ -294,6 +395,52 @@ class DroneTelemetry:
 
         return None
 
+    def _emit_side_telemetry(self, msg):
+        """Gorev/fence protokolu beklenirken gelen telemetri mesajlarini
+        yutmak yerine worker'a iletir. Bu olmadan uzun suren mission
+        upload/download islemleri boyunca arayuz saniyelerce donuyor, hatta
+        heartbeat zaman asimi dolup sahte 'baglanti kesildi' alarmi
+        caliyordu."""
+        if self.telemetry_sink is None:
+            return
+        try:
+            data = self._decode(msg)
+        except Exception as e:
+            print(f"[DroneTelemetry] Mesaj cozumlenemedi ({msg.get_type()}): {e}")
+            return
+        if data:
+            self.telemetry_sink(data)
+
+    def _recv_match_pumped(self, types, timeout):
+        """recv_match(blocking=True) yerine kullanilir: beklenen mesaj
+        turlerinden biri gelene kadar bekler, bu sirada gelen telemetriyi
+        _emit_side_telemetry ile akitmaya devam eder."""
+        if isinstance(types, str):
+            types = [types]
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            msg = self.master.recv_match(blocking=True, timeout=min(0.2, remaining))
+            if msg is None:
+                continue
+            if msg.get_type() in types:
+                return msg
+            self._emit_side_telemetry(msg)
+
+    def _drain_pending(self):
+        """Onceki islemlerden kalan ACK artiklarini temizler. Eski kod bunu
+        recv_match(blocking=False) dongusuyle yapiyordu; pymavlink tur
+        filtresine uymayan mesajlari da tukettigi icin o dongu telemetriyi
+        de siliyordu. Burada telemetri ileri gonderilir, yalnizca protokol
+        artiklari dusurulur."""
+        while True:
+            msg = self.master.recv_match(blocking=False)
+            if msg is None:
+                return
+            self._emit_side_telemetry(msg)
+
     def send_arm_disarm(self, arm: bool):
         self.master.mav.command_long_send(
             self.master.target_system,
@@ -304,7 +451,7 @@ class DroneTelemetry:
             0, 0, 0, 0, 0, 0,
         )
 
-        msg = self.master.recv_match(type="COMMAND_ACK", blocking=True, timeout=3)
+        msg = self._recv_match_pumped("COMMAND_ACK", 3)
 
         if msg is None:
             return False, "Zaman asimi: FC'den yanit gelmedi"
@@ -353,8 +500,7 @@ class DroneTelemetry:
         Lat/lon COMMAND_INT uzerinden int32 (degE7) olarak gonderilir;
         COMMAND_LONG'daki float32 param'lar bu hassasiyeti tasiyamaz.
         """
-        while self.master.recv_match(type="COMMAND_ACK", blocking=False) is not None:
-            pass
+        self._drain_pending()
 
         self.master.mav.command_int_send(
             self.master.target_system,
@@ -371,7 +517,7 @@ class DroneTelemetry:
             float(altitude_m),
         )
 
-        msg = self.master.recv_match(type="COMMAND_ACK", blocking=True, timeout=3)
+        msg = self._recv_match_pumped("COMMAND_ACK", 3)
         if msg is None:
             return False, "Zaman asimi: FC'den yanit gelmedi"
         if msg.command != mavutil.mavlink.MAV_CMD_DO_REPOSITION:
@@ -432,7 +578,7 @@ class DroneTelemetry:
                 self.master.target_component,
                 mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
             )
-            self.master.recv_match(type="MISSION_ACK", blocking=True, timeout=2)
+            self._recv_match_pumped("MISSION_ACK", 2)
 
             total_count = len(waypoints) + 1  # +1: seq 0 = home rezerve slotu
             self.master.mav.mission_count_send(
@@ -448,10 +594,8 @@ class DroneTelemetry:
             while attempts < max_retries:
                 attempts += 1
 
-                msg = self.master.recv_match(
-                    type=["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"],
-                    blocking=True,
-                    timeout=5,
+                msg = self._recv_match_pumped(
+                    ["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"], 5
                 )
                 if msg is None:
                     return False, "Zaman asimi: drondan cevap gelmedi"
@@ -516,17 +660,14 @@ class DroneTelemetry:
         Donus: (ok, mesaj, [(lat, lon, alt), ...])
         """
         try:
-            while self.master.recv_match(blocking=False) is not None:
-                pass
+            self._drain_pending()
 
             self.master.mav.mission_request_list_send(
                 self.master.target_system,
                 self.master.target_component,
             )
 
-            count_msg = self.master.recv_match(
-                type="MISSION_COUNT", blocking=True, timeout=5
-            )
+            count_msg = self._recv_match_pumped("MISSION_COUNT", 5)
             if count_msg is None:
                 return False, "MISSION_COUNT gelmedi (zaman asimi)", []
 
@@ -541,10 +682,8 @@ class DroneTelemetry:
                     self.master.target_component,
                     seq,
                 )
-                item = self.master.recv_match(
-                    type=["MISSION_ITEM_INT", "MISSION_ITEM"],
-                    blocking=True,
-                    timeout=5,
+                item = self._recv_match_pumped(
+                    ["MISSION_ITEM_INT", "MISSION_ITEM"], 5
                 )
                 if item is None:
                     return False, f"Waypoint {seq} indirilemedi (zaman asimi)", []
@@ -590,15 +729,14 @@ class DroneTelemetry:
         onu cagiran taraf (MissionPanel/MainWindow) ayrica temizlemelidir.
         """
         try:
-            while self.master.recv_match(blocking=False) is not None:
-                pass
+            self._drain_pending()
 
             self.master.mav.mission_clear_all_send(
                 self.master.target_system,
                 self.master.target_component,
                 mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
             )
-            ack = self.master.recv_match(type="MISSION_ACK", blocking=True, timeout=3)
+            ack = self._recv_match_pumped("MISSION_ACK", 3)
             if ack is None:
                 return False, "Zaman asimi: MISSION_ACK gelmedi"
             if ack.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
@@ -623,7 +761,7 @@ class DroneTelemetry:
                 self.master.target_component,
                 mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
             )
-            self.master.recv_match(type="MISSION_ACK", blocking=True, timeout=2)
+            self._recv_match_pumped("MISSION_ACK", 2)
 
             count = len(points)
             self.master.mav.mission_count_send(
@@ -637,10 +775,8 @@ class DroneTelemetry:
             attempts = 0
             while attempts < max_retries:
                 attempts += 1
-                msg = self.master.recv_match(
-                    type=["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"],
-                    blocking=True,
-                    timeout=5,
+                msg = self._recv_match_pumped(
+                    ["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"], 5
                 )
                 if msg is None:
                     return False, "Zaman asimi: drondan cevap gelmedi"
@@ -674,14 +810,13 @@ class DroneTelemetry:
     def download_fence_polygon(self):
         """FC'deki poligon fence'i okur. Donus: (ok, mesaj, [(lat, lon), ...])"""
         try:
-            while self.master.recv_match(blocking=False) is not None:
-                pass
+            self._drain_pending()
             self.master.mav.mission_request_list_send(
                 self.master.target_system,
                 self.master.target_component,
                 mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
             )
-            count_msg = self.master.recv_match(type="MISSION_COUNT", blocking=True, timeout=5)
+            count_msg = self._recv_match_pumped("MISSION_COUNT", 5)
             if count_msg is None:
                 return False, "MISSION_COUNT gelmedi (zaman asimi)", []
             count = int(count_msg.count)
@@ -695,8 +830,8 @@ class DroneTelemetry:
                     seq,
                     mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
                 )
-                item = self.master.recv_match(
-                    type=["MISSION_ITEM_INT", "MISSION_ITEM"], blocking=True, timeout=5
+                item = self._recv_match_pumped(
+                    ["MISSION_ITEM_INT", "MISSION_ITEM"], 5
                 )
                 if item is None:
                     return False, f"Nokta {seq} indirilemedi (zaman asimi)", []
@@ -726,14 +861,13 @@ class DroneTelemetry:
         """FC'nin poligon fence hafizasini tamamen siler (MISSION_CLEAR_ALL,
         MAV_MISSION_TYPE_FENCE ile)."""
         try:
-            while self.master.recv_match(blocking=False) is not None:
-                pass
+            self._drain_pending()
             self.master.mav.mission_clear_all_send(
                 self.master.target_system,
                 self.master.target_component,
                 mavutil.mavlink.MAV_MISSION_TYPE_FENCE,
             )
-            ack = self.master.recv_match(type="MISSION_ACK", blocking=True, timeout=3)
+            ack = self._recv_match_pumped("MISSION_ACK", 3)
             if ack is None:
                 return False, "Zaman asimi: MISSION_ACK gelmedi"
             if ack.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
@@ -776,7 +910,7 @@ class DroneTelemetry:
             )
         except Exception as e:
             print(f"[DroneTelemetry] PreArm kontrolu istenemedi: {e}")
-    _FAILSAFE_PARAMS = ["RTL_ALT_M", "FS_BATT_ENABLE", "BATT_LOW_VOLT"]
+
     def request_fence_params(self):
         """Dairesel geofence icin FENCE_ENABLE, FENCE_RADIUS, FENCE_ALT_MAX
         parametrelerini FC'den ister (PARAM_REQUEST_READ). Yanitlar
@@ -794,8 +928,9 @@ class DroneTelemetry:
                 print(f"[DroneTelemetry] {name} istenemedi: {e}")
 
     def request_failsafe_params(self):
-        """RTL_ALT, FS_BATT_ENABLE, BATT_LOW_VOLT parametrelerini FC'den
-        ister."""
+        """RTL irtifasi (RTL_ALT_M ve/veya RTL_ALT), FS_BATT_ENABLE ve
+        BATT_LOW_VOLT parametrelerini FC'den ister. FC hangi RTL adini
+        taniyorsa yalnizca ona PARAM_VALUE ile yanit verir."""
         for name in _FAILSAFE_PARAMS:
             try:
                 self.master.mav.param_request_read_send(
@@ -840,6 +975,93 @@ class DroneTelemetry:
             )
         except Exception as e:
             print(f"[DroneTelemetry] Fence parametreleri yazilamadi: {e}")
+
+    def _command_long(self, command, *params):
+        """command_long_send icin ince sarmalayici: 7 parametreyi tamamlar."""
+        args = list(params) + [0] * (7 - len(params))
+        self.master.mav.command_long_send(
+            self.master.target_system,
+            self.master.target_component,
+            command,
+            0,
+            *args,
+        )
+
+    def start_mag_cal(self, retry=True, autosave=False, delay_s=0.0):
+        """Pusula kalibrasyonunu baslatir (MAV_CMD_DO_START_MAG_CAL).
+
+        autosave=False ile baslatiriz: sonuc, kullanici sihirbazda "Kabul Et"
+        diyip accept_mag_cal() calismadan FC'ye YAZILMAZ. Boylece kotu bir
+        kalibrasyon kazara kalici hale gelmez.
+        param1=0 tum pusulalar demektir."""
+        self._command_long(
+            mavutil.mavlink.MAV_CMD_DO_START_MAG_CAL,
+            0,                          # param1: mag_mask (0 = tum pusulalar)
+            1 if retry else 0,          # param2: basarisizlikta tekrar dene
+            1 if autosave else 0,       # param3: otomatik kaydet
+            float(delay_s),             # param4: gecikme (saniye)
+            0,                          # param5: otomatik yeniden baslatma
+        )
+
+    def accept_mag_cal(self):
+        """Tamamlanan pusula kalibrasyonunu FC'ye kalici olarak yazdirir."""
+        self._command_long(mavutil.mavlink.MAV_CMD_DO_ACCEPT_MAG_CAL, 0)
+
+    def cancel_mag_cal(self):
+        """Suren pusula kalibrasyonunu iptal eder."""
+        self._command_long(mavutil.mavlink.MAV_CMD_DO_CANCEL_MAG_CAL, 0)
+
+    def start_accel_cal(self):
+        """6 pozisyonlu ivmeolcer kalibrasyonunu baslatir
+        (MAV_CMD_PREFLIGHT_CALIBRATION, param5=1). FC bundan sonra her
+        pozisyonu STATUSTEXT ile ister ve ACCELCAL_VEHICLE_POS bekler."""
+        self._command_long(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION,
+            0, 0, 0, 0,
+            1,  # param5 = 1 -> tam (6 pozisyonlu) ivmeolcer kalibrasyonu
+        )
+
+    def send_accel_cal_position(self, position: int):
+        """Aracin su an istenen pozisyonda oldugunu FC'ye bildirir
+        (MAV_CMD_ACCELCAL_VEHICLE_POS). position: 1..6, bkz. ACCEL_CAL_STEPS."""
+        self._command_long(
+            mavutil.mavlink.MAV_CMD_ACCELCAL_VEHICLE_POS, float(position)
+        )
+
+    def start_level_cal(self):
+        """Yatay duzlem (trim) kalibrasyonu: araci duz birakip calistirilir
+        (MAV_CMD_PREFLIGHT_CALIBRATION, param5=2)."""
+        self._command_long(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 2
+        )
+
+    def start_gyro_cal(self):
+        """Jiroskop kalibrasyonu (param1=1). Arac hareketsiz olmalidir."""
+        self._command_long(mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION, 1)
+
+    def start_baro_cal(self):
+        """Barometre / yer basinci sifirlama (param3=1)."""
+        self._command_long(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION, 0, 0, 1
+        )
+
+    def set_rtl_altitude(self, alt_m: float):
+        """RTL irtifasini METRE cinsinden alir ve firmware'in hangi
+        parametre adini kullandigindan bagimsiz olarak yazar: RTL_ALT_M
+        metre, eski RTL_ALT ise santimetre bekler (bkz. _RTL_ALT_PARAMS).
+        Her ikisine de birbirine denk degerler gonderildigi icin FC hangisini
+        taniyorsa dogru irtifayi alir."""
+        for name, per_meter in _RTL_ALT_PARAMS:
+            try:
+                self.master.mav.param_set_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    name.encode("utf-8"),
+                    float(alt_m) * per_meter,
+                    mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+                )
+            except Exception as e:
+                print(f"[DroneTelemetry] {name} yazilamadi: {e}")
 
     def request_all_params(self):
         """Tum FC parametrelerini ister (PARAM_REQUEST_LIST). Yanitlar

@@ -1,8 +1,10 @@
 """
 flight_summary_dialog.py
 --------------------------
-DISARM aninda acilan, biten ucusun kapsamli ozetini gosteren rapor
-penceresi. Kullanici raporu .txt dosyasi olarak da kaydedebilir.
+Biten ucusun kapsamli ozetini gosteren rapor penceresi. DISARM aninda
+KENDILIGINDEN ACILMAZ; MainWindow ozeti saklar ve pilot 'SON UCUS OZETI'
+butonuna bastiginda bu pencere acilir. Kullanici raporu .txt dosyasi
+olarak da kaydedebilir.
 """
 
 from datetime import datetime

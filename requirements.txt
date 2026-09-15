@@ -1,6 +1,11 @@
-pymavlink
-PyQt5
-PyQtWebEngine
-matplotlib
-pyserial
-pyinstaller
+# Calisma zamani bagimliliklari.
+# Ust sinirlar bir sonraki ANA surumun sessizce gelip kirmasini onler;
+# alt sinirlar projenin kullandigi API'lerin mevcut oldugu en eski surumdur.
+pymavlink>=2.4.37,<3
+PyQt5>=5.15.6,<6
+PyQtWebEngine>=5.15.5,<6
+matplotlib>=3.5,<4
+pyserial>=3.5,<4
+
+# Yalnizca paketleme icin gerekli (bkz. gcs.spec); calistirmak icin sart degil.
+pyinstaller>=5.13,<7

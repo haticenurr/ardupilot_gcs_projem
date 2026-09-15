@@ -5,10 +5,12 @@ Ucus plani (mission) duzenleme paneli.
 GCS Yol Haritasi - Ucus Plani ozelligi
 
 Waypoint listesini bir tabloda gosterir, irtifa duzenlemeye izin verir,
-gorevi drona yukleme / dosyaya kaydetme / dosyadan yukleme butonlarini icerir.
+gorevi drona yukleme / dosyaya kaydetme / dosyadan yukleme ve endustri
+standardi formatlara (.waypoints, .kml) disa aktarma butonlarini icerir.
 """
 
 import json
+import os
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget,
@@ -16,6 +18,8 @@ from PyQt5.QtWidgets import (
     QHeaderView, QAbstractItemView
 )
 from PyQt5.QtCore import pyqtSignal, Qt
+
+from core.exporters import mission_to_kml, mission_to_waypoints
 
 
 DEFAULT_ALTITUDE = 30.0  # metre, yeni eklenen her waypoint icin varsayilan irtifa
@@ -31,6 +35,10 @@ class MissionPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.waypoints = []  # [(lat, lon, alt), ...]
+        # .waypoints dosyasindaki 0. satir (home) icin; MainWindow
+        # HOME_POSITION geldiginde set_home() ile doldurur. Bilinmiyorsa
+        # ilk waypoint'in konumu kullanilir.
+        self.home = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -82,6 +90,14 @@ class MissionPanel(QWidget):
         self.btn_load = QPushButton("Dosyadan Yukle")
         self.btn_load.clicked.connect(self.load_from_file)
         file_row.addWidget(self.btn_load)
+
+        self.btn_export = QPushButton("Disa Aktar")
+        self.btn_export.setToolTip(
+            "Gorevi .waypoints (Mission Planner / QGroundControl) veya "
+            ".kml (Google Earth) olarak kaydet"
+        )
+        self.btn_export.clicked.connect(self.export_mission)
+        file_row.addWidget(self.btn_export)
         group_layout.addLayout(file_row)
 
         self.btn_upload = QPushButton("GOREVI DRONA YUKLE")
@@ -171,6 +187,51 @@ class MissionPanel(QWidget):
             QMessageBox.information(self, "Basarili", f"Kaydedildi: {path}")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Kaydetme hatasi: {e}")
+
+    def set_home(self, lat, lon):
+        """FC'den gelen home konumu; .waypoints disa aktarmasinda 0. satira
+        yazilir."""
+        self.home = (lat, lon)
+
+    def export_mission(self):
+        """Gorevi endustri standardi formatlara aktarir."""
+        if not self.waypoints:
+            QMessageBox.information(self, "Bilgi", "Disa aktarilacak waypoint yok.")
+            return
+
+        wpl_filtre = "Mission Planner Gorevi (*.waypoints)"
+        kml_filtre = "Google Earth (*.kml)"
+        path, secilen = QFileDialog.getSaveFileName(
+            self, "Gorevi Disa Aktar", "gorev.waypoints",
+            f"{wpl_filtre};;{kml_filtre}",
+        )
+        if not path:
+            return
+
+        # Bicim once uzantiya, uzanti yoksa secilen filtreye gore belirlenir.
+        uzanti = os.path.splitext(path)[1].lower()
+        if uzanti == ".kml":
+            kml = True
+        elif uzanti == ".waypoints":
+            kml = False
+        else:
+            kml = secilen == kml_filtre
+            path += ".kml" if kml else ".waypoints"
+
+        try:
+            if kml:
+                icerik = mission_to_kml(self.waypoints, ad="Ucus Plani")
+            else:
+                icerik = mission_to_waypoints(self.waypoints, home=self.home)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(icerik)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Disa aktarma hatasi: {e}")
+            return
+
+        bicim = "KML" if kml else ".waypoints"
+        QMessageBox.information(self, "Basarili", f"{bicim} olarak kaydedildi:\n{path}")
+        self.status_message.emit(f"Gorev {bicim} olarak disa aktarildi")
 
     def load_from_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Ucus Plani Ac", "", "JSON Dosyasi (*.json)")

@@ -48,16 +48,28 @@ from ui.event_log_panel import EventLogPanel
 from ui.connection_dialog import ConnectionDialog
 from core.flight_logger import FlightLogger
 from core.app_paths import logs_dir
+from core.voice_alerts import VoiceAlerts
 from ui.artificial_horizon import ArtificialHorizon
 from ui.replay_panel import ReplayPanel
 from ui.mission_mode_selector import MissionModeSelector
 from ui.preflight_checklist_dialog import PreflightChecklistDialog
 from ui.flight_summary_dialog import FlightSummaryDialog
 from ui.parameter_editor_dialog import ParameterEditorDialog
+from ui.calibration_dialog import CalibrationDialog
 
 if getattr(sys, "frozen", False):
     os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+    # Tek dosya paketinde matplotlib'in yapilandirma dizini her calistirmada
+    # silinen gecici klasore dusuyor; bu yuzden font onbellegi HER ACILISTA
+    # yeniden kuruluyor (macOS'ta system_profiler cagrildigi icin onlarca
+    # saniye). Onbellegi calistirilabilir dosyanin yanina sabitliyoruz:
+    # ilk acilis bir kez yavas, sonrakiler hizli olur.
+    _mpl_cache = os.path.join(
+        os.path.dirname(os.path.abspath(sys.executable)), ".mpl-cache"
+    )
+    os.makedirs(_mpl_cache, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", _mpl_cache)
 UDP_ENDPOINT = "udp:127.0.0.1:14550"
 UDP_BADGE_TEXT = "UDP 14550"
 DEFAULT_TAKEOFF_ALT = 20
@@ -231,11 +243,20 @@ class TelemetryWorker(QThread):
         self._lost_emitted = False
         self._was_armed= False
         self._last_prearm_poll = 0.0
+        # Telemetri hatalarini sessizce yutmak yerine kisik sesle raporlamak
+        # icin (bkz. _log_telemetry_error).
+        self._last_error_sig = None
+        self._last_error_ts = 0.0
+        self._suppressed_errors = 0
 
     def run(self):
         try:
             from core.drone_telemetry import DroneTelemetry
             self.drone = DroneTelemetry(self.connection_string)
+            # Uzun mission/fence islemleri sirasinda yakalanan telemetri de
+            # ayni yoldan yayinlansin; aksi halde o saniyelerde arayuz donuk
+            # kaliyor ve heartbeat zaman asimi sahte alarm uretiyordu.
+            self.drone.telemetry_sink = self._publish
             self._last_traffic = time.time()
             self.connection_status_signal.emit(True, "Baglanti basarili")
         except Exception as e:
@@ -258,14 +279,9 @@ class TelemetryWorker(QThread):
                     if self.drone:
                         data = self.drone.get_telemetry_data()
                         if data:
-                            self._last_traffic = time.time()
-                            if self._lost_emitted:
-                                self._lost_emitted = False
-                                self.connection_status_signal.emit(True, "Baglanti toparlandi")
-                            self._process_telemetry_data(data)    
-                            self.telemetry_signal.emit(data)
-                except Exception:
-                    pass
+                            self._publish(data)
+                except Exception as e:
+                    self._log_telemetry_error(e)
 
                 if (
                     not self._lost_emitted
@@ -287,14 +303,43 @@ class TelemetryWorker(QThread):
                     self._last_prearm_poll = now
                     try:
                         self.drone.request_prearm_check()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log_telemetry_error(e)
 
                 time.sleep(0.05)
         finally:
             if self.drone:
                 self.drone.close()
                 self.drone = None
+
+    def _publish(self, data):
+        """Telemetriyi GUI'ye ileten TEK nokta. Hem ana dongu hem de
+        DroneTelemetry'nin uzun protokol beklemeleri sirasinda yakaladigi
+        mesajlar buradan gecer; boylece 'son trafik' zamani ve toparlanma
+        bildirimi her iki yolda da ayni sekilde isler."""
+        self._last_traffic = time.time()
+        if self._lost_emitted:
+            self._lost_emitted = False
+            self.connection_status_signal.emit(True, "Baglanti toparlandi")
+        self._process_telemetry_data(data)
+        self.telemetry_signal.emit(data)
+
+    def _log_telemetry_error(self, exc):
+        """Telemetri hatalarini yutmak yerine raporlar. Dongu saniyede ~20
+        kez dondugu icin ayni hata en fazla 5 saniyede bir yazdirilir;
+        bastirilan tekrar sayisi bir sonraki satirda belirtilir."""
+        now = time.time()
+        signature = f"{type(exc).__name__}: {exc}"
+        if signature == self._last_error_sig and (now - self._last_error_ts) < 5.0:
+            self._suppressed_errors += 1
+            return
+        suffix = ""
+        if self._suppressed_errors:
+            suffix = f" (onceki {self._suppressed_errors} tekrar bastirildi)"
+        self._last_error_sig = signature
+        self._last_error_ts = now
+        self._suppressed_errors = 0
+        print(f"[TelemetryWorker] Telemetri hatasi: {signature}{suffix}")
 
     def _handle_command(self, cmd):
         name = cmd.get("cmd")
@@ -323,6 +368,24 @@ class TelemetryWorker(QThread):
                 self.drone.request_fence_params()
             elif name == "request_failsafe_params":
                 self.drone.request_failsafe_params()
+            elif name == "set_rtl_alt":
+                self.drone.set_rtl_altitude(float(cmd.get("altitude")))
+            elif name == "start_mag_cal":
+                self.drone.start_mag_cal()
+            elif name == "accept_mag_cal":
+                self.drone.accept_mag_cal()
+            elif name == "cancel_mag_cal":
+                self.drone.cancel_mag_cal()
+            elif name == "start_accel_cal":
+                self.drone.start_accel_cal()
+            elif name == "accel_cal_position":
+                self.drone.send_accel_cal_position(int(cmd.get("position")))
+            elif name == "start_level_cal":
+                self.drone.start_level_cal()
+            elif name == "start_gyro_cal":
+                self.drone.start_gyro_cal()
+            elif name == "start_baro_cal":
+                self.drone.start_baro_cal()
             elif name == "request_single_param":
                 self.drone.request_single_param(cmd.get("name"))                
             elif name == "set_fence":
@@ -365,9 +428,7 @@ class TelemetryWorker(QThread):
             return None
         data = self.drone.get_telemetry_data()
         if data:
-            self._last_traffic = time.time()
-            self._process_telemetry_data(data)
-            self.telemetry_signal.emit(data)
+            self._publish(data)
         return data
         
     def _process_telemetry_data(self, data):
@@ -384,8 +445,8 @@ class TelemetryWorker(QThread):
             if armed_now and not self._was_armed:
                 try:
                     self.drone.request_home_position()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log_telemetry_error(e)
             self._was_armed = armed_now
 
     def _wait_heartbeat(self, predicate, timeout_s, status_text):
@@ -541,6 +602,33 @@ class TelemetryWorker(QThread):
     def set_param(self, name: str, value: float, param_type: int):
         self.enqueue(cmd="set_param", name=name, value=value, param_type=param_type)
 
+    def set_rtl_altitude(self, alt_m: float):
+        self.enqueue(cmd="set_rtl_alt", altitude=alt_m)
+
+    def start_mag_cal(self):
+        self.enqueue(cmd="start_mag_cal")
+
+    def accept_mag_cal(self):
+        self.enqueue(cmd="accept_mag_cal")
+
+    def cancel_mag_cal(self):
+        self.enqueue(cmd="cancel_mag_cal")
+
+    def start_accel_cal(self):
+        self.enqueue(cmd="start_accel_cal")
+
+    def send_accel_cal_position(self, position: int):
+        self.enqueue(cmd="accel_cal_position", position=position)
+
+    def start_level_cal(self):
+        self.enqueue(cmd="start_level_cal")
+
+    def start_gyro_cal(self):
+        self.enqueue(cmd="start_gyro_cal")
+
+    def start_baro_cal(self):
+        self.enqueue(cmd="start_baro_cal")
+
     def request_single_param(self, name: str):
         self.enqueue(cmd="request_single_param", name=name)
     def upload_fence_polygon(self, points):
@@ -568,8 +656,14 @@ class MainWindow(QMainWindow):
         self.current_heading = None
         self.current_battery = None
         self.flight_logger = FlightLogger(log_dir=logs_dir())
+        # Kritik uyarilarin sesli anonsu. Sistemde TTS yoksa available
+        # False olur ve ozellik sessizce devre disi kalir.
+        self.voice = VoiceAlerts(enabled=True)
         self._was_armed = False
         self._summary_dialog_open = False
+        # Biten ucusun ozeti burada saklanir; pencere DISARM aninda
+        # kendiliginden acilmaz, pilot "SON UCUS OZETI" butonuyla acar.
+        self._last_flight_summary = None
         self.home_lat = None
         self.home_lon = None
         self.mission_current_seq = None
@@ -582,7 +676,6 @@ class MainWindow(QMainWindow):
         self.mission_mode = "Standart"   
         self.fence_enabled = None
         self.fence_radius = None 
-        self.rtl_alt_cm = None
         self.batt_fs_enabled = None
         self.batt_fs_volt = None 
         self._low_battery_warned = False  
@@ -592,6 +685,7 @@ class MainWindow(QMainWindow):
         self._conn_alarm_timer.setInterval(500)
         self._conn_alarm_timer.timeout.connect(self._toggle_connection_alarm) 
         self.current_satellites = None
+        self.current_rssi = None
         self._flight_max_alt = None
         self._flight_max_speed = None
         self._flight_min_battery = None
@@ -608,6 +702,7 @@ class MainWindow(QMainWindow):
         self._flight_timer.timeout.connect(self._update_flight_timer_label)
         self.guided_click_active = False
         self.param_editor_dialog = None
+        self.calibration_dialog = None
         self.fence_polygon_points = []
         self.polygon_edit_active = False        
         self._fence_type_pending_polygon_fix = False
@@ -811,6 +906,14 @@ class MainWindow(QMainWindow):
         self.btn_param_editor = QPushButton("Parametreler")
         self.btn_param_editor.setCursor(Qt.PointingHandCursor)
         self.btn_param_editor.clicked.connect(self.on_param_editor_clicked)
+        self.btn_calibration = QPushButton("Kalibrasyon")
+        self.btn_calibration.setCursor(Qt.PointingHandCursor)
+        self.btn_calibration.clicked.connect(self.on_calibration_clicked)
+
+        self.btn_voice = QPushButton()
+        self.btn_voice.setCursor(Qt.PointingHandCursor)
+        self.btn_voice.clicked.connect(self.on_voice_toggle_clicked)
+        self._refresh_voice_button()
         layout.addWidget(self.badge_connection)
         layout.addWidget(self.badge_arm)
         layout.addWidget(self.badge_mode)
@@ -819,6 +922,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_reconnect)
         layout.addWidget(self.btn_connection_settings)
         layout.addWidget(self.btn_param_editor)
+        layout.addWidget(self.btn_calibration)
+        layout.addWidget(self.btn_voice)
         self._style_reconnect_button(attention=False)
         return bar
 
@@ -854,10 +959,16 @@ class MainWindow(QMainWindow):
         self.card_wp = StatCard("Siradaki WP", "#", "#fab387")
         self.card_wp_dist = StatCard("Hedefe Mesafe", "m", "#f9e2af")
         self.card_home_dist = StatCard("Eve Mesafe", "m", "#a6e3a1")
+        self.card_rssi = StatCard("Sinyal", "%", "#94e2d5")
+        self.card_rssi.setToolTip(
+            "Telemetri radyosunun sinyal gucu (RADIO_STATUS). "
+            "SITL bu mesaji uretmez, o yuzden simulasyonda '--' kalir."
+        )
 
         for card in (
             self.card_alt, self.card_gs, self.card_hdg, self.card_bat,
             self.card_gps, self.card_wp, self.card_wp_dist, self.card_home_dist,
+            self.card_rssi,
         ):
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -869,6 +980,7 @@ class MainWindow(QMainWindow):
         cards.addWidget(self.card_wp, 2, 1)
         cards.addWidget(self.card_wp_dist, 3, 0)
         cards.addWidget(self.card_home_dist, 3, 1)
+        cards.addWidget(self.card_rssi, 4, 0)
         layout.addLayout(cards)
 
         attitude_group = QGroupBox("Yonelim")
@@ -901,6 +1013,19 @@ class MainWindow(QMainWindow):
         )
         self.btn_preflight_check.clicked.connect(self.on_preflight_check_clicked)
         control_layout.addWidget(self.btn_preflight_check)
+
+        # RTL/LAND sirasinda otopilot kisa sureli, gercek olmayan bir DISARM
+        # gorunumu uretebiliyor; ozeti DISARM aninda otomatik acmak bu yuzden
+        # pilotun onune beklenmedik anda pencere getiriyordu. Ozet artik
+        # saklanir, pilot hazir oldugunda bu butonla acar.
+        self.btn_last_summary = QPushButton("SON UCUS OZETI")
+        self.btn_last_summary.setCursor(Qt.PointingHandCursor)
+        self.btn_last_summary.setEnabled(False)
+        self.btn_last_summary.setToolTip(
+            "Henuz tamamlanmis bir ucus yok. Ucus DISARM ile bittiginde aktiflesir."
+        )
+        self.btn_last_summary.clicked.connect(self.on_last_summary_clicked)
+        control_layout.addWidget(self.btn_last_summary)
 
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Ucus Adi (opsiyonel)"))
@@ -1078,25 +1203,50 @@ class MainWindow(QMainWindow):
         minutes, seconds = divmod(elapsed, 60)
         self._style_badge(self.badge_flight_timer, f"SURE: {minutes:02d}:{seconds:02d}", "#a6e3a1")
 
-    def _show_flight_summary(self, duration_s: float):
+    def _capture_flight_summary(self, duration_s: float):
+        """Biten ucusun istatistiklerini saklar ve 'SON UCUS OZETI' butonunu
+        aktiflestirir. Pencereyi ACMAZ: RTL/LAND sirasindaki kisa sureli,
+        gercek olmayan DISARM gorunumleri pilotun onune beklenmedik anda
+        pencere getiriyordu."""
+        self._last_flight_summary = {
+            "duration_s": duration_s,
+            "max_alt": self._flight_max_alt or 0.0,
+            "max_speed": self._flight_max_speed or 0.0,
+            "distance_m": self._flight_distance_m,
+            "min_battery": self._flight_min_battery,
+            "min_satellites": self._flight_min_satellites,
+            "mode_changes": self._flight_mode_changes,
+            "fence_breach": self._flight_fence_breach,
+            "start_iso": self._flight_start_iso,
+            "flight_name": self.flight_name_input.text().strip(),
+            "log_filename": self.flight_logger.get_current_filename(),
+        }
+        minutes, seconds = divmod(int(duration_s), 60)
+        self.btn_last_summary.setEnabled(True)
+        self.btn_last_summary.setText(f"SON UCUS OZETI ({minutes:02d}:{seconds:02d})")
+        self.btn_last_summary.setToolTip("Biten ucusun ozet raporunu ac")
+        self.btn_last_summary.setStyleSheet(
+            "background-color: #89dceb; color: #1e1e2e; font-weight: 800; "
+            "padding: 10px; border-radius: 8px;"
+        )
+        self.event_log_panel.add_event(
+            "Ucus ozeti hazir — 'SON UCUS OZETI' butonuyla goruntuleyebilirsiniz",
+            success=True,
+        )
+        self.show_transient_status("Ucus ozeti hazir", 4000, success=True)
+
+    def on_last_summary_clicked(self):
+        """Saklanan son ucus ozetini gosterir."""
+        if not self._last_flight_summary:
+            self.show_transient_status(
+                "Henuz tamamlanmis bir ucus yok", 3000, success=False
+            )
+            return
         if self._summary_dialog_open:
             return
         self._summary_dialog_open = True
         try:
-            dialog = FlightSummaryDialog(
-                duration_s=duration_s,
-                max_alt=self._flight_max_alt or 0.0,
-                max_speed=self._flight_max_speed or 0.0,
-                distance_m=self._flight_distance_m,
-                min_battery=self._flight_min_battery,
-                min_satellites=self._flight_min_satellites,
-                mode_changes=self._flight_mode_changes,
-                fence_breach=self._flight_fence_breach,
-                start_iso=self._flight_start_iso,
-                flight_name=self.flight_name_input.text().strip(),
-                log_filename=self.flight_logger.get_current_filename(),
-                parent=self,
-            )
+            dialog = FlightSummaryDialog(parent=self, **self._last_flight_summary)
             dialog.exec_()
         finally:
             self._summary_dialog_open = False
@@ -1210,10 +1360,11 @@ class MainWindow(QMainWindow):
         if not self.worker or not self.connected:
             self.show_transient_status("Baglanti yok: RTL irtifasi gonderilemedi", 3000, success=False)
             return
-        # NOT: Guncel ArduPilot surumlerinde parametre adi RTL_ALT_M'e
-        # cevrildi ve deger DOGRUDAN metre cinsinden tutuluyor (eski
-        # RTL_ALT santimetre cinsindeydi, *100 cevrimi gerektiriyordu).
-        self.worker.set_param("RTL_ALT_M", alt_m, 9)
+        # NOT: ArduPilot 4.5+ bu ayari RTL_ALT_M (metre) adiyla tutar; daha
+        # eski surumlerde ad RTL_ALT ve birim SANTIMETREDIR. Yalnizca birine
+        # yazmak, digerini calistiran FC'de ayarin sessizce kaybolmasina yol
+        # aciyordu - worker artik iki adi da kendi biriminde yaziyor.
+        self.worker.set_rtl_altitude(alt_m)
         self.event_log_panel.add_event(f"RTL irtifasi ayarlandi: {alt_m:.0f} m", success=True)
         self.show_transient_status("RTL irtifasi gonderiliyor...", 2000)
 
@@ -1493,6 +1644,9 @@ class MainWindow(QMainWindow):
     def update_connection_status(self, success: bool, message: str):
         self.connected = success
         if success:
+            # _was_ever_connected'i asagida kullanacagimiz icin ONCE oku:
+            # ilk baglantida "geri geldi" anonsu yapilmamali.
+            ilk_baglanti = not self._was_ever_connected
             self._was_ever_connected = True
             self._stop_connection_alarm()
             self._style_badge(
@@ -1502,6 +1656,11 @@ class MainWindow(QMainWindow):
             )
             self._style_reconnect_button(attention=False)
             self.show_transient_status("MAVLink baglantisi kuruldu", 3000, success=True)
+            if not ilk_baglanti:
+                self.voice.say(
+                    "Telemetri baglantisi geri geldi",
+                    key="baglanti", min_interval_s=15,
+                )
             self.worker.request_fence()
             self.worker.enqueue(cmd="request_failsafe_params")
             if self._pending_mission_clear_on_connect:
@@ -1518,6 +1677,11 @@ class MainWindow(QMainWindow):
             self._style_reconnect_button(attention=True)
             self.show_transient_status(f"Baglanti hatasi: {message}", 3000, success=False)
             print(f"Baglanti hatasi: {message}")
+            if self._was_ever_connected:
+                self.voice.say(
+                    "Telemetri baglantisi kesildi",
+                    key="baglanti", min_interval_s=15,
+                )
             self._was_armed = False
             self.is_armed = False
             if self._was_ever_connected:
@@ -1542,6 +1706,7 @@ class MainWindow(QMainWindow):
                 self.flight_logger.stop()
                 self.flight_logger.start(custom_name=self.flight_name_input.text())
                 self.event_log_panel.add_event("Drone ARM edildi — ucus kaydi basladi", success=True)
+                self.voice.say("Motorlar armed", key="arm", min_interval_s=3)
                 self.replay_panel.refresh_file_list()
                 self._start_flight_timer()
                 self._flight_max_alt = None
@@ -1558,11 +1723,14 @@ class MainWindow(QMainWindow):
                 had_flight = self._flight_start_ts is not None
                 self.flight_logger.stop()
                 self.event_log_panel.add_event("Drone DISARM edildi — ucus kaydi durdu", success=None)
+                self.voice.say("Motorlar disarmed", key="disarm", min_interval_s=3)
                 self.replay_panel.refresh_file_list()
                 if had_flight:
                     flight_summary_duration = self._stop_flight_timer()
 
             self.safety_panel.set_armed(armed)
+            if self.calibration_dialog is not None:
+                self.calibration_dialog.set_armed(armed)
             if armed:
                 self._style_badge(self.badge_arm, "ARMED", "#a6e3a1")
                 self.btn_arm.setText("DISARM")
@@ -1585,7 +1753,7 @@ class MainWindow(QMainWindow):
             self._update_action_buttons()
 
             if flight_summary_duration is not None:
-                self._show_flight_summary(flight_summary_duration)
+                self._capture_flight_summary(flight_summary_duration)
         elif msg_type == "ATTITUDE":
             self.lbl_pitch.setText(f"Pitch: {data['pitch']:.3f} rad")
             self.lbl_roll.setText(f"Roll: {data['roll']:.3f} rad")
@@ -1662,6 +1830,12 @@ class MainWindow(QMainWindow):
                         self.show_transient_status(
                             f"DUSUK PIL: %{int(remaining)} — inis/RTL dusunun", 5000, success=False
                         )
+                    # Uyari ekranda bir kez cikar, ancak pil kritik
+                    # kaldigi surece 30 saniyede bir sesli tekrarlanir.
+                    self.voice.say(
+                        f"Dusuk pil, yuzde {int(remaining)}",
+                        key="dusuk_pil", min_interval_s=30,
+                    )
                 elif remaining <= 40:
                     self.card_bat.set_accent("#f9e2af")
                     self._low_battery_warned = False
@@ -1684,6 +1858,19 @@ class MainWindow(QMainWindow):
             else:
                 self.card_gps.set_accent("#cba6f7")
 
+        elif msg_type == "RADIO_STATUS":
+            # Yerel ve uzak ucun DUSUK olani baglantinin gercek kalitesini
+            # belirler; zayif yon hangisiyse onu gosteriyoruz.
+            pct = min(int(data.get("rssi_pct", 0)), int(data.get("remrssi_pct", 0)))
+            self.current_rssi = pct
+            self.card_rssi.set_value(str(pct))
+            if pct < 30:
+                self.card_rssi.set_accent("#f38ba8")
+            elif pct < 60:
+                self.card_rssi.set_accent("#f9e2af")
+            else:
+                self.card_rssi.set_accent("#94e2d5")
+
         elif msg_type == "MISSION_CURRENT":
             self.mission_current_seq = int(data.get("seq", 0))
             self._refresh_nav_cards()
@@ -1692,6 +1879,8 @@ class MainWindow(QMainWindow):
             self.home_lat = data["lat"]
             self.home_lon = data["lon"]
             self.map_widget.update_home(data["lat"], data["lon"])
+            # .waypoints disa aktarmasinda 0. satir (home) icin
+            self.mission_panel.set_home(data["lat"], data["lon"])
             self._refresh_nav_cards()
             self._refresh_geofence()
 
@@ -1703,8 +1892,11 @@ class MainWindow(QMainWindow):
             elif pid == "FENCE_RADIUS":
                 self.fence_radius = data["value"]
                 self._refresh_geofence()
-            elif pid == "RTL_ALT_M":
-                self.safety_panel.set_failsafe_display(data["value"], None, None)
+            elif pid in ("RTL_ALT_M", "RTL_ALT"):
+                # RTL_ALT_M metre, eski RTL_ALT santimetre cinsindedir;
+                # panel her zaman metre bekler.
+                alt_m = data["value"] if pid == "RTL_ALT_M" else data["value"] / 100.0
+                self.safety_panel.set_failsafe_display(alt_m, None, None)
             elif pid == "FS_BATT_ENABLE":
                 self.batt_fs_enabled = bool(data["value"])
                 self.safety_panel.set_failsafe_display(None, self.batt_fs_enabled, None)
@@ -1729,16 +1921,36 @@ class MainWindow(QMainWindow):
                         )                
             if self.param_editor_dialog is not None:
                 self.param_editor_dialog.on_param_received(data)
+        elif msg_type == "MAG_CAL_PROGRESS":
+            if self.calibration_dialog is not None:
+                self.calibration_dialog.on_mag_progress(data)
+
+        elif msg_type == "MAG_CAL_REPORT":
+            if self.calibration_dialog is not None:
+                self.calibration_dialog.on_mag_report(data)
+
         elif msg_type == "EKF_STATUS_REPORT":
             self.safety_panel.process_ekf_status(data)
 
         elif msg_type == "STATUSTEXT":
             self.safety_panel.process_statustext(data)
+            if self.calibration_dialog is not None:
+                self.calibration_dialog.on_statustext(data)
             text_lower = (data.get("text") or "").lower()
             if "fence" in text_lower:
                 self.event_log_panel.add_event(data.get("text", ""), success=False)
+                self.voice.say(
+                    "Geofence ihlali", key="fence", min_interval_s=20
+                )
             if self.is_armed and "breach" in text_lower:
                 self._flight_fence_breach = True
+            # MAV_SEVERITY: 0 EMERGENCY ... 3 ERROR. Bu esigin altindaki
+            # mesajlar (uyari/bilgi) sesli okunmaz, yoksa surekli konusur.
+            if int(data.get("severity", 6)) <= 3:
+                self.voice.say(
+                    data.get("text", ""),
+                    key=f"kritik:{text_lower[:24]}", min_interval_s=20,
+                )
     def on_preflight_check_clicked(self):
         checks = []
 
@@ -1908,6 +2120,93 @@ class MainWindow(QMainWindow):
         dialog.show()
         self._on_param_download_requested()
 
+    def _refresh_voice_button(self):
+        if not self.voice.available:
+            self.btn_voice.setText("SES: YOK")
+            self.btn_voice.setEnabled(False)
+            self.btn_voice.setToolTip(
+                "Bu sistemde metin okuma araci bulunamadi "
+                "(macOS: say · Linux: spd-say/espeak · Windows: PowerShell)"
+            )
+            return
+        acik = self.voice.enabled
+        self.btn_voice.setText("SES: ACIK" if acik else "SES: KAPALI")
+        self.btn_voice.setToolTip(
+            "Kritik uyarilarin sesli anonsunu ac/kapat"
+        )
+        self.btn_voice.setStyleSheet(
+            "background-color: %s; color: #1e1e2e; font-weight: 800; "
+            "border-radius: 8px; padding: 8px 12px;"
+            % ("#a6e3a1" if acik else "#45475a")
+        )
+
+    def on_voice_toggle_clicked(self):
+        acik = self.voice.set_enabled(not self.voice.enabled)
+        self._refresh_voice_button()
+        self.event_log_panel.add_event(
+            f"Sesli uyarilar {'acildi' if acik else 'kapatildi'}", success=acik
+        )
+        if acik:
+            self.voice.say("Sesli uyarilar acik", key="ses_test", min_interval_s=0)
+
+    def on_calibration_clicked(self):
+        """Kalibrasyon sihirbazini acar. Pencere MAVLink'e dogrudan
+        dokunmaz; sinyalleri buradan worker'in komut kuyruguna aktarilir."""
+        if self.calibration_dialog is not None:
+            self.calibration_dialog.raise_()
+            self.calibration_dialog.activateWindow()
+            return
+        dialog = CalibrationDialog(armed=self.is_armed, parent=self)
+        dialog.start_mag_requested.connect(
+            lambda: self._kalibrasyon_komutu("start_mag_cal", "Pusula kalibrasyonu baslatildi")
+        )
+        dialog.accept_mag_requested.connect(
+            lambda: self._kalibrasyon_komutu("accept_mag_cal", "Pusula kalibrasyonu kaydedildi")
+        )
+        dialog.cancel_mag_requested.connect(
+            lambda: self._kalibrasyon_komutu("cancel_mag_cal", "Pusula kalibrasyonu iptal edildi")
+        )
+        dialog.start_accel_requested.connect(
+            lambda: self._kalibrasyon_komutu("start_accel_cal", "Ivmeolcer kalibrasyonu baslatildi")
+        )
+        dialog.accel_position_confirmed.connect(self._on_accel_position_confirmed)
+        dialog.start_level_requested.connect(
+            lambda: self._kalibrasyon_komutu("start_level_cal", "Yatay duzlem kalibrasyonu baslatildi")
+        )
+        dialog.start_gyro_requested.connect(
+            lambda: self._kalibrasyon_komutu("start_gyro_cal", "Jiroskop kalibrasyonu baslatildi")
+        )
+        dialog.start_baro_requested.connect(
+            lambda: self._kalibrasyon_komutu("start_baro_cal", "Barometre kalibrasyonu baslatildi")
+        )
+        dialog.finished.connect(self._on_calibration_dialog_closed)
+        self.calibration_dialog = dialog
+        dialog.show()
+
+    def _kalibrasyon_komutu(self, komut: str, olay_metni: str):
+        """Sihirbaz sinyallerini worker komutuna cevirir. Kalibrasyon
+        yalnizca DISARM haldeyken ve baglanti varken gonderilir."""
+        if not self.worker or not self.connected:
+            self.show_transient_status("Baglanti yok: kalibrasyon gonderilemedi", 3000, success=False)
+            return
+        if self.is_armed:
+            self.show_transient_status(
+                "Arac ARM durumda: once DISARM edin", 4000, success=False
+            )
+            return
+        self.worker.enqueue(cmd=komut)
+        self.event_log_panel.add_event(olay_metni, success=True)
+        self.show_transient_status(olay_metni, 3000)
+
+    def _on_accel_position_confirmed(self, position: int):
+        if not self.worker or not self.connected:
+            self.show_transient_status("Baglanti yok: pozisyon gonderilemedi", 3000, success=False)
+            return
+        self.worker.send_accel_cal_position(position)
+
+    def _on_calibration_dialog_closed(self):
+        self.calibration_dialog = None
+
     def _on_param_download_requested(self):
         if not self.worker or not self.connected:
             self.show_transient_status("Baglanti yok: parametreler indirilemedi", 3000, success=False)
@@ -1994,6 +2293,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         print("Pencere kapatiliyor...")
+        self.voice.stop()
         if self.worker is not None:
             self._disconnect_worker(self.worker)
             self.worker.stop()
@@ -2021,6 +2321,12 @@ def apply_dark_palette(app):
 
 
 if __name__ == "__main__":
+    # QtWebEngine (harita) bu bayragin QApplication'dan ONCE ayarlanmasini
+    # sart kosar; aksi halde "AA_ShareOpenGLContexts must be set before a
+    # QCoreApplication instance is created" hatasiyla acilmaz. Gelistirmede
+    # ui.map_widget_v3 importu bunu tesadufen sagliyordu, ancak paketlenmis
+    # surumde import sirasi degisebildigi icin acikca ayarliyoruz.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     apply_dark_palette(app)

@@ -12,10 +12,10 @@ except Exception as e:
 sys.stdout.flush()
 
 try:
-    from drone_telemetry import DroneTelemetry
-    print("3. drone_telemetry.py import BASARILI")
+    from core.drone_telemetry import DroneTelemetry
+    print("3. core/drone_telemetry.py import BASARILI")
 except Exception as e:
-    print("3. HATA - drone_telemetry.py import edilemedi:", repr(e))
+    print("3. HATA - core/drone_telemetry.py import edilemedi:", repr(e))
     sys.exit(1)
 sys.stdout.flush()
 

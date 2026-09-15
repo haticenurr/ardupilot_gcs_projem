@@ -8,7 +8,10 @@ Linux:
 Windows (ayni spec):
   pyinstaller --noconfirm --clean gcs.spec
 
-Cikti: dist/GCS  (Linux) veya dist/GCS.exe (Windows)
+Cikti: dist/GCS  (Linux/macOS) veya dist/GCS.exe (Windows)
+
+Paketleme her kod degisikliginden sonra tekrarlanmalidir; bu yuzden
+gelistirme yol haritasinda (YOL_HARITASI.md) en son adimdir.
 
 QtWebEngine icu/pak/resource dosyalari collect_all(PyQt5) ile alinir.
 """
@@ -34,6 +37,8 @@ hiddenimports = [
     "core.drone_telemetry",
     "core.flight_logger",
     "core.app_paths",
+    "core.exporters",
+    "core.voice_alerts",
     "ui.map_widget_v3",
     "ui.mission_panel",
     "ui.safety_panel",
@@ -46,6 +51,8 @@ hiddenimports = [
     "ui.preflight_checklist_dialog",
     "ui.flight_summary_dialog",
     "ui.flight_graph_dialog",
+    "ui.parameter_editor_dialog",
+    "ui.calibration_dialog",
 ]
 
 for pkg in ("PyQt5", "matplotlib", "pymavlink"):

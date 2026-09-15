@@ -18,9 +18,10 @@ from PyQt5.QtWidgets import (
     QSlider,
     QFrame,
     QSizePolicy,
+    QFileDialog,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QSize
-from ui.flight_graph_dialog import FlightGraphDialog
+from core.exporters import flight_log_to_kml
 
 
 class ReplayPanel(QWidget):
@@ -137,6 +138,14 @@ class ReplayPanel(QWidget):
 
         self.load_button = self._icon_button("⬇", "Kaydi yukle")
         self.load_button.clicked.connect(self.load_selected_file)
+
+        self.export_button = QPushButton("KML")
+        self.export_button.setToolTip(
+            "Secili ucus kaydini Google Earth icin .kml olarak disa aktar"
+        )
+        self.export_button.setFixedWidth(56)
+        self.export_button.clicked.connect(self.export_selected_to_kml)
+        strip_row.addWidget(self.export_button)
         strip_row.addWidget(self.load_button)
         layout.addWidget(strip)
 
@@ -218,6 +227,30 @@ class ReplayPanel(QWidget):
         else:
             self.play_button.setText("▶")
             self.play_button.setToolTip("Oynat")
+
+    def export_selected_to_kml(self):
+        """Secili CSV ucus kaydini KML'e cevirip kaydeder."""
+        filename = self.file_combo.currentText()
+        if not filename:
+            self.info_label.setText("Once bir kayit dosyasi sec.")
+            return
+        kaynak = os.path.join(self.log_dir, filename)
+        varsayilan = os.path.splitext(filename)[0] + ".kml"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Ucus Kaydini KML Olarak Kaydet", varsayilan, "Google Earth (*.kml)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".kml"):
+            path += ".kml"
+        try:
+            icerik = flight_log_to_kml(kaynak)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(icerik)
+        except Exception as e:
+            self.info_label.setText(f"KML disa aktarilamadi: {e}")
+            return
+        self.info_label.setText(f"KML kaydedildi: {os.path.basename(path)}")
 
     def refresh_file_list(self):
         self.file_combo.clear()
@@ -388,5 +421,10 @@ class ReplayPanel(QWidget):
         if not self.rows:
             return
         filename = self.file_combo.currentText() or "Ucus Kaydi"
+        # matplotlib importu BILEREK burada: modul duzeyinde import
+        # edilirse uygulama her acilista matplotlib'i (ve macOS'ta cok yavas
+        # olan font taramasini) yukler. Grafik yalnizca istendiginde gerekir.
+        from ui.flight_graph_dialog import FlightGraphDialog
+
         dialog = FlightGraphDialog(self.rows, filename, parent=self)
         dialog.exec_()
