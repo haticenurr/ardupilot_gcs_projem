@@ -48,6 +48,7 @@ from ui.event_log_panel import EventLogPanel
 from ui.connection_dialog import ConnectionDialog
 from core.flight_logger import FlightLogger
 from core.app_paths import logs_dir
+from core.mission_planner import haversine_m
 from core.voice_alerts import VoiceAlerts
 from ui.artificial_horizon import ArtificialHorizon
 from ui.replay_panel import ReplayPanel
@@ -195,26 +196,6 @@ DARK_STYLESHEET = """
         border: none;
     }
 """
-
-
-def haversine_m(lat1, lon1, lat2, lon2):
-    """Iki WGS84 noktasi arasindaki buyuk daire mesafesi (metre)."""
-    r_earth = 6371000.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    # ONEMLI DUZELTME: iki nokta birbirine COK yaklastiginda (hedefe/eve
-    # neredeyse ulasildiginda), ondalik yuvarlama hatasi yuzunden 'a' ufak
-    # NEGATIF bir sayi olabiliyor (orn. -1e-16). math.sqrt(negatif) Python'da
-    # "math domain error" ile COKUYOR. Eski kod sadece ust siniri (1.0)
-    # kirpiyordu, alt siniri (0.0) kirpmiyordu. max(0.0, ...) ekleyerek bu
-    # cokmeyi tamamen onluyoruz - bu cokme, mesafe kartlarinin hedefe/eve
-    # yaklasildiginda guncellenmeyi durdurmasina (donuk kalmasina) sebep
-    # oluyordu.
-    a = max(0.0, min(1.0, a))
-    return 2 * r_earth * math.asin(math.sqrt(a))
 
 
 class TelemetryWorker(QThread):
@@ -707,7 +688,13 @@ class MainWindow(QMainWindow):
         self.connection_string = UDP_ENDPOINT
         self.mission_mode = "Standart"   
         self.fence_enabled = None
-        self.fence_radius = None 
+        self.fence_radius = None
+        # FENCE_ALT_MAX FC'den zaten isteniyordu ama gelen deger hicbir
+        # yerde kullanilmiyordu; gorev analizi irtifa limiti kontrolu icin
+        # buna ihtiyac duyuyor.
+        self.fence_alt_max = None
+        # Seyir hizi (WPNAV_SPEED, FC'de cm/s). Gorev suresi tahmini icin.
+        self.cruise_speed_ms = None 
         self.batt_fs_enabled = None
         self.batt_fs_volt = None 
         self._low_battery_warned = False  
@@ -1367,10 +1354,28 @@ class MainWindow(QMainWindow):
         else:
             self.card_home_dist.set_value("--")
 
+    def _push_mission_context(self):
+        """Gorev analizinin ihtiyac duydugu baglami MissionPanel'e aktarir:
+        home konumu, geofence sinirlari ve seyir hizi."""
+        home = None
+        if self.home_lat is not None and self.home_lon is not None:
+            home = (self.home_lat, self.home_lon)
+        self.mission_panel.set_analysis_context(
+            home=home,
+            fence={
+                "enabled": bool(self.fence_enabled),
+                "radius_m": self.fence_radius,
+                "alt_max_m": self.fence_alt_max,
+                "polygon": list(self.fence_polygon_points),
+            },
+            cruise_speed_ms=self.cruise_speed_ms,
+        )
+
     def _refresh_geofence(self):
         """Home konumu ve FENCE_ENABLE/FENCE_RADIUS parametreleri elde
         edildiginde haritada dairesel geofence sinirini cizer/gunceller."""
         self.safety_panel.set_fence_display(bool(self.fence_enabled), self.fence_radius)
+        self._push_mission_context()
         if (
             self.fence_enabled
             and self.fence_radius
@@ -1587,6 +1592,9 @@ class MainWindow(QMainWindow):
         order = self.MISSION_MODE_TAB_ORDER.get(mode_name, self.MISSION_MODE_TAB_ORDER["Standart"])
         self._apply_tab_order(order, animate=True)
         self._apply_mode_accent(mode_name)
+        # Mod artik yalnizca gorunumu degil, gorev planlama davranisini da
+        # belirliyor: Haritalama ve Arama Kurtarma otomatik rota uretir.
+        self.mission_panel.set_mission_mode(mode_name)
         self.event_log_panel.add_event(f"Gorev modu: {mode_name}", success=None)
     def on_waypoints_changed(self, waypoints):
         self.map_widget.redraw_waypoints(waypoints)
@@ -1695,6 +1703,8 @@ class MainWindow(QMainWindow):
                 )
             self.worker.request_fence()
             self.worker.enqueue(cmd="request_failsafe_params")
+            # Gorev suresi tahmini icin seyir hizi.
+            self.worker.request_single_param("WPNAV_SPEED")
             if self._pending_mission_clear_on_connect:
                 # Yeniden baglanildiginda onceki oturumdan kalma eski
                 # gorevin FC'de asili kalmamasi icin otomatik temizle.
@@ -1911,8 +1921,10 @@ class MainWindow(QMainWindow):
             self.home_lat = data["lat"]
             self.home_lon = data["lon"]
             self.map_widget.update_home(data["lat"], data["lon"])
-            # .waypoints disa aktarmasinda 0. satir (home) icin
+            # .waypoints disa aktarmasinda 0. satir (home) ve gorev
+            # analizinde eve uzaklik hesabi icin
             self.mission_panel.set_home(data["lat"], data["lon"])
+            self._push_mission_context()
             self._refresh_nav_cards()
             self._refresh_geofence()
 
@@ -1924,6 +1936,13 @@ class MainWindow(QMainWindow):
             elif pid == "FENCE_RADIUS":
                 self.fence_radius = data["value"]
                 self._refresh_geofence()
+            elif pid == "FENCE_ALT_MAX":
+                self.fence_alt_max = data["value"]
+                self._push_mission_context()
+            elif pid == "WPNAV_SPEED":
+                # FC bu degeri cm/s tutar.
+                self.cruise_speed_ms = float(data["value"]) / 100.0
+                self._push_mission_context()
             elif pid in ("RTL_ALT_M", "RTL_ALT"):
                 # RTL_ALT_M metre, eski RTL_ALT santimetre cinsindedir;
                 # panel her zaman metre bekler.

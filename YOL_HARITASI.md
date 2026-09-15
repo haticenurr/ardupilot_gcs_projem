@@ -287,3 +287,81 @@ Gerekli hale gelecegi durumlar:
 Eklenirse: SQLite (tek dosya, kurulum gerektirmez), CSV kaydi **aynen
 korunur** — veritabani CSV'nin yerine degil, uzerine bir indeks katmani
 olarak gelir. Karar 1-6 bittikten sonra verilecek.
+
+---
+
+# Ikinci Faz
+
+Birinci fazin (1-6) tamamlanmasindan sonra secilen isler.
+
+## 7. Gorev modlarini gercek yap `[~]`
+
+### Sorun
+"Standart / Arama Kurtarma / Haritalama" secicisi yalnizca bazi telemetri
+kartlarini gizliyor, sekme sirasini ve vurgu rengini degistiriyor. Mod
+basina GERCEK bir davranis yok — secici vaat ettigi seyi yapmiyor.
+
+### Cozum
+Her mod, o goreve ozgu bir rota URETIR. Kullanici haritaya birkac nokta
+tiklar, mod butonuna basar; noktalar uretilen rotayla degistirilir.
+Boylece yeni harita cizim altyapisi gerekmez.
+
+- **Haritalama:** mevcut waypoint'ler bir POLIGON tanimlar -> icini tarayan
+  gidis-donus rotasi (survey grid / boustrophedon). Hat araligi ya
+  dogrudan verilir ya da kamera gorus acisi + ortusme oranindan hesaplanir:
+
+      yer_genisligi = 2 * irtifa * tan(FOV / 2)
+      hat_araligi   = yer_genisligi * (1 - ortusme)
+
+- **Arama Kurtarma:** ilk waypoint MERKEZ kabul edilir -> genisleyen kare
+  (expanding square) deseni. Bacak uzunluklari d, d, 2d, 2d, 3d, 3d ...
+  seklinde artar, her bacakta 90 derece donulur. Denizcilik/havacilik
+  arama standardi.
+
+### Dokunulacak yerler
+- `core/mission_planner.py` -> **yeni**: saf geometri fonksiyonlari
+  (yerel duzleme izdusum, poligon tarama, genisleyen kare)
+- `ui/pattern_dialog.py` -> **yeni**: parametre penceresi
+- `ui/mission_panel.py` -> mod'a gore gorunen "Otomatik Rota Uret" butonu
+
+### Kabul kriteri
+- Uretilen rota poligonun DISINA tasmaz.
+- Hat araligi istenen degere esittir (metre cinsinden dogrulanir).
+- Genisleyen karede bacak uzunluklari d, d, 2d, 2d ... sirasini izler.
+- 3'ten az nokta veya gecersiz parametrede anlasilir hata verilir.
+
+---
+
+## 8. Gorev onizleme ve guvenlik analizi `[ ]`
+
+Gorev drona YUKLENMEDEN once hesaplanir:
+- Toplam mesafe, bacak bacak mesafeler, tahmini sure
+- Eve olan en uzak mesafe
+- En dusuk / en yuksek irtifa
+- **Uyarilar:** dairesel geofence disina cikan nokta, poligon fence
+  disina cikan nokta, `FENCE_ALT_MAX` asimi, sifir/negatif irtifa,
+  birbirine cok yakin (yanlis tiklama) noktalar
+
+### Dokunulacak yerler
+- `core/mission_analysis.py` -> **yeni**
+- `ui/mission_panel.py` -> analiz ozeti ve yukleme oncesi uyari
+
+---
+
+## 9. Pil detayi ve eve donus menzili `[ ]`
+
+Su an yalnizca `SYS_STATUS`'un yuzde tahmini kullaniliyor.
+`BATTERY_STATUS` ile akim, tuketilen mAh ve kalan sure eklenecek; uzerine
+"eve donmeye pil yeter mi" tahmini.
+
+### Dokunulacak yerler
+- `core/drone_telemetry.py` -> `BATTERY_STATUS` cozumlemesi
+- `main_v7.py` -> yeni kartlar ve menzil uyarisi
+
+---
+
+## 10. Acil klavye kisayollari ve rally point `[ ]`
+
+- Kisayollar: RTL, LAND, DISARM — fare aramadan. Onay penceresi korunur.
+- Rally point (acil inis noktalari): `MAV_MISSION_TYPE_RALLY`. Poligon
+  fence ile birebir ayni protokol, kodun buyuk kismi hazir.

@@ -15,11 +15,20 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget,
     QTableWidgetItem, QPushButton, QLabel, QFileDialog, QMessageBox,
-    QHeaderView, QAbstractItemView
+    QHeaderView, QAbstractItemView, QDialog
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 
 from core.exporters import mission_to_kml, mission_to_waypoints
+from core.mission_analysis import (
+    HATA,
+    analyze_mission,
+    hata_sayisi,
+    mesafe_metni,
+    ozet_metni,
+    sure_metni,
+)
+from ui.pattern_dialog import MOD_ARAMA, MOD_HARITALAMA, PatternDialog
 
 
 DEFAULT_ALTITUDE = 30.0  # metre, yeni eklenen her waypoint icin varsayilan irtifa
@@ -39,6 +48,12 @@ class MissionPanel(QWidget):
         # HOME_POSITION geldiginde set_home() ile doldurur. Bilinmiyorsa
         # ilk waypoint'in konumu kullanilir.
         self.home = None
+        # Gorev analizi icin baglam; MainWindow set_analysis_context() ile
+        # gunceller. Bilinmiyorsa analiz yine calisir, sadece eve uzaklik
+        # ve geofence kontrolleri atlanir.
+        self.fence = {}
+        self.cruise_speed_ms = None
+        self.mission_mode = "Standart"
         self.setup_ui()
 
     def setup_ui(self):
@@ -99,6 +114,26 @@ class MissionPanel(QWidget):
         self.btn_export.clicked.connect(self.export_mission)
         file_row.addWidget(self.btn_export)
         group_layout.addLayout(file_row)
+
+        self.btn_pattern = QPushButton("OTOMATIK ROTA URET")
+        self.btn_pattern.setStyleSheet(
+            "background-color: #cba6f7; color: #1e1e2e; font-weight: 800; padding: 10px;"
+        )
+        self.btn_pattern.setToolTip(
+            "Haritalama: noktalar bir alan tanimlar, icini tarayan rota uretilir.\n"
+            "Arama Kurtarma: ilk nokta merkez alinir, genisleyen kare deseni uretilir."
+        )
+        self.btn_pattern.clicked.connect(self.on_pattern_clicked)
+        self.btn_pattern.setVisible(False)  # yalnizca ilgili modlarda gorunur
+        group_layout.addWidget(self.btn_pattern)
+
+        self.lbl_analiz = QLabel("Waypoint eklendiginde gorev ozeti burada gorunur.")
+        self.lbl_analiz.setWordWrap(True)
+        self.lbl_analiz.setStyleSheet(
+            "background-color: #181825; border: 1px solid #313244; "
+            "border-radius: 8px; padding: 8px; color: #a6adc8; font-size: 11px;"
+        )
+        group_layout.addWidget(self.lbl_analiz)
 
         self.btn_upload = QPushButton("GOREVI DRONA YUKLE")
         self.btn_upload.setStyleSheet(
@@ -173,6 +208,110 @@ class MissionPanel(QWidget):
             self.table.item(row, 0).setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
             self.table.item(row, 1).setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         self.table.blockSignals(False)
+        self._refresh_analysis()
+
+    # ------------------------------------------------------------------
+    # Gorev analizi
+    # ------------------------------------------------------------------
+
+    def set_analysis_context(self, home=None, fence=None, cruise_speed_ms=None):
+        """MainWindow, FC'den ogrendigi home / geofence / seyir hizi
+        bilgilerini buraya aktarir. Analiz bunlar olmadan da calisir."""
+        if home is not None:
+            self.home = home
+        if fence is not None:
+            self.fence = fence
+        if cruise_speed_ms:
+            self.cruise_speed_ms = cruise_speed_ms
+        self._refresh_analysis()
+
+    def set_mission_mode(self, mode: str):
+        """Gorev modu degisince otomatik rota butonunun gorunurlugunu ayarlar."""
+        self.mission_mode = mode
+        self.btn_pattern.setVisible(mode in (MOD_HARITALAMA, MOD_ARAMA))
+        if mode == MOD_HARITALAMA:
+            self.btn_pattern.setText("ALANI TARAYAN ROTA URET")
+        elif mode == MOD_ARAMA:
+            self.btn_pattern.setText("ARAMA DESENI URET")
+
+    def analyze(self):
+        """Mevcut gorevin analizini dondurur."""
+        return analyze_mission(
+            self.waypoints,
+            home=self.home,
+            speed_ms=self.cruise_speed_ms or 5.0,
+            fence=self.fence,
+        )
+
+    def _refresh_analysis(self):
+        if not self.waypoints:
+            self.lbl_analiz.setText(
+                "Waypoint eklendiginde gorev ozeti burada gorunur."
+            )
+            self.lbl_analiz.setStyleSheet(
+                "background-color: #181825; border: 1px solid #313244; "
+                "border-radius: 8px; padding: 8px; color: #6c7086; font-size: 11px;"
+            )
+            return
+
+        analiz = self.analyze()
+        satirlar = [ozet_metni(analiz)]
+        if analiz["eve_en_uzak_m"] is not None:
+            satirlar.append(
+                f"Eve en uzak: {mesafe_metni(analiz['eve_en_uzak_m'])} · "
+                f"donus: {mesafe_metni(analiz['donus_mesafesi_m'])}"
+            )
+        satirlar.append(
+            f"Irtifa: {analiz['min_irtifa_m']:.0f}–{analiz['max_irtifa_m']:.0f} m"
+        )
+
+        hatalar = hata_sayisi(analiz)
+        uyari_sayisi = len(analiz["uyarilar"]) - hatalar
+        if hatalar:
+            satirlar.append(f"⚠ {hatalar} guvenlik sorunu — yuklemeden once bakin")
+            renk, kenar = "#f38ba8", "#f38ba8"
+        elif uyari_sayisi:
+            satirlar.append(f"{uyari_sayisi} uyari")
+            renk, kenar = "#f9e2af", "#313244"
+        else:
+            renk, kenar = "#a6e3a1", "#313244"
+
+        self.lbl_analiz.setText("\n".join(satirlar))
+        self.lbl_analiz.setStyleSheet(
+            f"background-color: #181825; border: 1px solid {kenar}; "
+            f"border-radius: 8px; padding: 8px; color: {renk}; font-size: 11px;"
+        )
+
+    # ------------------------------------------------------------------
+    # Otomatik rota uretimi
+    # ------------------------------------------------------------------
+
+    def on_pattern_clicked(self):
+        if self.mission_mode not in (MOD_HARITALAMA, MOD_ARAMA):
+            return
+        gerekli = 3 if self.mission_mode == MOD_HARITALAMA else 1
+        if len(self.waypoints) < gerekli:
+            QMessageBox.information(
+                self,
+                "Bilgi",
+                f"{self.mission_mode} icin haritaya en az {gerekli} nokta "
+                f"ekleyin (su an {len(self.waypoints)}).",
+            )
+            return
+
+        dialog = PatternDialog(self.mission_mode, self.waypoints, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        uretilen = dialog.get_waypoints()
+        if not uretilen:
+            return
+
+        self.waypoints = uretilen
+        self._refresh_table()
+        self.waypoints_changed.emit(self.waypoints)
+        self.status_message.emit(
+            f"{self.mission_mode} rotasi uretildi: {len(uretilen)} nokta"
+        )
 
     def save_to_file(self):
         if not self.waypoints:
@@ -250,7 +389,30 @@ class MissionPanel(QWidget):
         if not self.waypoints:
             QMessageBox.information(self, "Bilgi", "Once en az bir waypoint ekle.")
             return
-        self.status_message.emit("Gorev yukleniyor...")
+
+        # Guvenlik sorunlarini yuklemeden ONCE goster. Geofence disindaki
+        # bir waypoint normalde ancak ucus sirasinda failsafe tetiklenince
+        # anlasilir.
+        analiz = self.analyze()
+        hatalar = [u for u in analiz["uyarilar"] if u["seviye"] == HATA]
+        if hatalar:
+            metin = "\n".join(f"• {u['metin']}" for u in hatalar[:8])
+            if len(hatalar) > 8:
+                metin += f"\n• ... ve {len(hatalar) - 8} sorun daha"
+            cevap = QMessageBox.warning(
+                self,
+                "Gorevde guvenlik sorunu",
+                f"{len(hatalar)} sorun bulundu:\n\n{metin}\n\n"
+                f"Yine de yuklemek istiyor musunuz?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if cevap != QMessageBox.Yes:
+                return
+
+        self.status_message.emit(
+            f"Gorev yukleniyor... ({ozet_metni(analiz)})"
+        )
         self.upload_requested.emit(self.waypoints)
 
     def on_download_clicked(self):
