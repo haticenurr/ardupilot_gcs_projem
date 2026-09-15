@@ -442,6 +442,3 @@ class MissionPanel(QWidget):
         if emit_changed:
             self.waypoints_changed.emit(self.waypoints)
 
-    def show_upload_result(self, success: bool, message: str):
-        prefix = "Yuklendi" if success else "Hata"
-        self.status_message.emit(f"{prefix}: {message}")

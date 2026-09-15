@@ -174,11 +174,17 @@ ACCEL_CAL_STEPS = (
 
 
 class DroneTelemetry:
-    def __init__(self, connection_string="udp:127.0.0.1:14550"):
+    def __init__(self, connection_string="udp:127.0.0.1:14550", iptal_kontrolu=None):
         # Uzun protokol islemleri (mission/fence upload-download, ACK
         # bekleme) sirasinda yakalanan telemetri buraya iletilir; worker
         # bunu kendi _publish() metoduna baglar.
         self.telemetry_sink = None
+        # Cagiran taraf baglanti kurulumunu yarida kesmek isterse True
+        # dondurur. Olmadan, heartbeat beklemesi 10 saniye boyunca
+        # kesilemez; bu surede "Yeniden Baglan"a basilirsa worker thread'i
+        # terminate ile oldurulur ve UDP soketi ACIK KALIR (sonraki
+        # baglanti "Address already in use" ile duser).
+        self._iptal_kontrolu = iptal_kontrolu or (lambda: False)
         print(f"[DroneTelemetry] Baglanti kuruluyor: {connection_string}")
         # ConnectionDialog seri port secildiginde "PORT,BAUD" formatinda
         # bir string uretir (orn. "/dev/ttyUSB0,57600"). pymavlink'in
@@ -196,22 +202,33 @@ class DroneTelemetry:
         else:
             self.master = mavutil.mavlink_connection(connection_string)
 
-        self._wait_vehicle_heartbeat(timeout=10)
-        print(
-            f"[DroneTelemetry] Heartbeat alindi! "
-            f"(system={self.master.target_system}, "
-            f"component={self.master.target_component})"
-        )
-
-        self._request_data_streams()
-        self._request_home_position()
+        # Buradan sonrasi hata verirse soket ACIK KALMAMALI: __init__
+        # tamamlanmadigi icin cagiran taraf close() cagirabilecegi bir
+        # nesneye sahip olmaz ve port kilitli kalir.
+        try:
+            self._wait_vehicle_heartbeat(timeout=10)
+            print(
+                f"[DroneTelemetry] Heartbeat alindi! "
+                f"(system={self.master.target_system}, "
+                f"component={self.master.target_component})"
+            )
+            self._request_data_streams()
+            self._request_home_position()
+        except BaseException:
+            self.close()
+            raise
 
     def _wait_vehicle_heartbeat(self, timeout=10):
         """Ilk gelen HEARTBEAT GCS ise target_system yanlis kalir.
-        Yalnizca arac/otopilot HEARTBEAT'ini kabul et."""
+        Yalnizca arac/otopilot HEARTBEAT'ini kabul et.
+
+        Bekleme kisa dilimler halinde yapilir ki cagiran taraf
+        (iptal_kontrolu) baglantiyi yarida kesebilsin."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            remaining = max(0.1, deadline - time.time())
+            if self._iptal_kontrolu():
+                raise InterruptedError("Baglanti kurulumu iptal edildi")
+            remaining = max(0.1, min(0.25, deadline - time.time()))
             msg = self.master.recv_match(type="HEARTBEAT", blocking=True, timeout=remaining)
             if msg is None:
                 continue

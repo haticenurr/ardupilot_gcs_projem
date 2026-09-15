@@ -213,7 +213,6 @@ class TelemetryWorker(QThread):
     wizard_status = pyqtSignal(str, bool)  # mesaj, devam_ediyor_mu
     arm_result = pyqtSignal(bool, str)   
     goto_result = pyqtSignal(bool, str)
-    param_value_received = pyqtSignal(dict)
     fence_polygon_upload_result = pyqtSignal(bool, str)
     fence_polygon_download_result = pyqtSignal(bool, str, list)
     fence_polygon_clear_result = pyqtSignal(bool, str)
@@ -246,13 +245,22 @@ class TelemetryWorker(QThread):
     def run(self):
         try:
             from core.drone_telemetry import DroneTelemetry
-            self.drone = DroneTelemetry(self.connection_string)
+            # iptal_kontrolu: stop() cagrildiginda heartbeat beklemesi
+            # aninda kesilir. Olmadan thread terminate ile oldurulur ve
+            # UDP soketi acik kalirdi.
+            self.drone = DroneTelemetry(
+                self.connection_string,
+                iptal_kontrolu=lambda: not self.is_running,
+            )
             # Uzun mission/fence islemleri sirasinda yakalanan telemetri de
             # ayni yoldan yayinlansin; aksi halde o saniyelerde arayuz donuk
             # kaliyor ve heartbeat zaman asimi sahte alarm uretiyordu.
             self.drone.telemetry_sink = self._publish
             self._last_traffic = time.time()
             self.connection_status_signal.emit(True, "Baglanti basarili")
+        except InterruptedError:
+            # Kullanici baglanti kurulurken vazgecti; hata bildirmeye gerek yok.
+            return
         except Exception as e:
             print(f"Baglanti baslatilamadi: {e}")
             self.connection_status_signal.emit(False, str(e))
@@ -590,11 +598,27 @@ class TelemetryWorker(QThread):
             self.wizard_status.emit(f"Gorev sihirbazi hata: {e}", False)
 
     def stop(self):
+        """Thread'i durdurur ve MAVLink soketinin kapanmasini bekler.
+
+        Bekleme suresi, baglanti kurulumundaki en uzun islemden (heartbeat
+        beklemesi) UZUN olmali. Kisa olursa terminate() devreye girer,
+        thread run()'daki `finally` blogunu calistiramaz ve UDP soketi
+        acik kalir — sonraki baglanti "Address already in use" ile duser.
+        `iptal_kontrolu` sayesinde normalde buraya hic gelinmez.
+        """
         self.is_running = False
-        if not self.wait(8000):
-            print("[TelemetryWorker] Thread zamaninda durmadi, terminate")
-            self.terminate()
-            self.wait(1500)
+        if self.wait(12000):
+            return
+        print("[TelemetryWorker] Thread zamaninda durmadi, terminate")
+        self.terminate()
+        self.wait(1500)
+        # terminate() `finally` blogunu ATLAR; soketi burada elle kapatiyoruz.
+        if self.drone is not None:
+            try:
+                self.drone.close()
+            except Exception as e:
+                print(f"[TelemetryWorker] Soket kapatilamadi: {e}")
+            self.drone = None
 
     def enqueue(self, **kwargs):
         self.command_queue.put(kwargs)
@@ -703,6 +727,8 @@ class MainWindow(QMainWindow):
         self.voice = VoiceAlerts(enabled=True)
         self._was_armed = False
         self._summary_dialog_open = False
+        # Kayit oynatma modu: acikken canli telemetri arayuzu ezmez.
+        self.is_replaying = False
         # Biten ucusun ozeti burada saklanir; pencere DISARM aninda
         # kendiliginden acilmaz, pilot "SON UCUS OZETI" butonuyla acar.
         self._last_flight_summary = None
@@ -769,6 +795,16 @@ class MainWindow(QMainWindow):
         self._start_worker()
 
     def _start_worker(self):
+        # Ayni anda iki worker calisirsa ikisi de ayni UDP portuna baglanmaya
+        # calisir ve ikincisi "Address already in use" ile duser; uygulama
+        # kalici olarak baglantisiz kalir. Yeni worker yaratmadan once
+        # eskisinin gercekten durdugundan emin oluyoruz.
+        onceki = self.worker
+        if onceki is not None and onceki.isRunning():
+            print("[GCS] Onceki worker hala calisiyor, durduruluyor")
+            self._disconnect_worker(onceki)
+            onceki.stop()
+
         print("MAVLink okuma dongusu arka planda baslatiliyor...")
         self.worker = TelemetryWorker(self.connection_string)
         self.worker.telemetry_signal.connect(self.update_telemetry_ui)
@@ -1995,9 +2031,33 @@ class MainWindow(QMainWindow):
         self._update_action_buttons()
 
     def update_telemetry_ui(self, data):
-        if getattr(self, "is_replaying", False):
-            return
         msg_type = data.get("type")
+
+        # Kayit oynatilirken canli telemetri arayuzu EZMEMELI. Tek istisna
+        # HEARTBEAT'tir: arac ARM olursa oynatmayi derhal durdurup canli
+        # goruntuye donmek ZORUNDAYIZ.
+        #
+        # Eski kod bu fonksiyonun en basinda kosulsuz return ediyordu; ARM
+        # tespiti de bu fonksiyonun icinde oldugu icin, oynatma bir kez
+        # baslayinca arac ARM olsa bile GCS bunu HIC fark etmiyordu —
+        # pilot, ucan bir aracin yaninda kayitli ucusun irtifa, konum ve
+        # pil degerlerini canli saniyordu.
+        if self.is_replaying:
+            if msg_type != "HEARTBEAT" or not bool(data.get("armed")):
+                return
+            self.is_replaying = False
+            self.replay_panel.set_armed(True)
+            self.event_log_panel.add_event(
+                "Arac ARM edildi — kayit oynatma durduruldu, canli telemetriye donuldu",
+                success=False,
+            )
+            self.show_transient_status(
+                "Arac ARM edildi — canli telemetriye donuldu", 6000, success=False
+            )
+            self.voice.say(
+                "Kayit oynatma durduruldu, canli telemetri",
+                key="replay_durdu", min_interval_s=30,
+            )
 
         if msg_type == "HEARTBEAT":
             armed = bool(data.get("armed"))
@@ -2035,6 +2095,11 @@ class MainWindow(QMainWindow):
                     flight_summary_duration = self._stop_flight_timer()
 
             self.safety_panel.set_armed(armed)
+            # ARM olunca suren bir kayit oynatmasi varsa durdurulur ve
+            # canli telemetriye donulur.
+            self.replay_panel.set_armed(armed)
+            if armed:
+                self.is_replaying = False
             if self.calibration_dialog is not None:
                 self.calibration_dialog.set_armed(armed)
             if armed:
@@ -2556,6 +2621,15 @@ class MainWindow(QMainWindow):
     def _on_param_dialog_closed(self):
         self.param_editor_dialog = None
     def on_replay_state_changed(self, active: bool):
+        # Guvenlik: ucus sirasinda kayit oynatmak, canli telemetriyi
+        # gizleyip pilota eski verileri canli gibi gosterir.
+        if active and self.is_armed:
+            self.is_replaying = False
+            self.replay_panel.set_armed(True)
+            self.show_transient_status(
+                "Arac ARM durumda: kayit oynatma kapali", 4000, success=False
+            )
+            return
         self.is_replaying = active
 
     def on_replay_sample(self, data: dict):
@@ -2608,6 +2682,19 @@ class MainWindow(QMainWindow):
                 )
                 self.on_reconnect_clicked()
     def on_reconnect_clicked(self):
+        # Ust uste tiklama, onceki baglanti kurulumu bitmeden yeni worker
+        # yaratip port cakismasina yol aciyordu.
+        if getattr(self, "_reconnecting", False):
+            return
+        self._reconnecting = True
+        self.btn_reconnect.setEnabled(False)
+        try:
+            self._reconnect()
+        finally:
+            self._reconnecting = False
+            self.btn_reconnect.setEnabled(True)
+
+    def _reconnect(self):
         self.safety_panel.reset_connection_state()
         self.show_transient_status("Yeniden baglaniliyor...", 0)
         self._style_reconnect_button(attention=False)

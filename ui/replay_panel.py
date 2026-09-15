@@ -33,6 +33,7 @@ class ReplayPanel(QWidget):
         super().__init__()
         self.log_dir = log_dir
         self.rows = []
+        self._armed = False
         self.current_index = 0
         self.playback_speed = 1.0
 
@@ -309,7 +310,33 @@ class ReplayPanel(QWidget):
         self.meta_label.setText(f"{stamp}  ·  {duration}")
         self.meta_label.setToolTip(filename)
 
+    def set_armed(self, armed: bool):
+        """Arac ARM iken kayit oynatma KAPATILIR.
+
+        Oynatma sirasinda MainWindow canli telemetriyi gormezden gelir
+        (is_replaying); ucus sirasinda bu, pilota kayitli ucusun irtifa,
+        konum ve pil degerlerini CANLI SANARAK gosterir. Bu yuzden ARM
+        aninda oynatma durdurulur ve buton kilitlenir."""
+        self._armed = bool(armed)
+        if self._armed and self.timer.isActive():
+            self.timer.stop()
+            self._set_playing_visual(False)
+            self.state_changed.emit(False)
+            self.info_label.setText(
+                "Arac ARM edildi — canli telemetriye donuldu, oynatma durduruldu."
+            )
+        self.play_button.setEnabled(not self._armed and bool(self.rows))
+        self.play_button.setToolTip(
+            "Ucus sirasinda kayit oynatilamaz" if self._armed else "Oynat"
+        )
+
     def toggle_play(self):
+        if getattr(self, "_armed", False):
+            self.info_label.setText(
+                "Arac ARM durumda: kayit oynatma kapali. "
+                "Canli telemetri gizlenmemeli."
+            )
+            return
         if self.timer.isActive():
             self.timer.stop()
             self._set_playing_visual(False)
