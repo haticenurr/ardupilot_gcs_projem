@@ -32,6 +32,8 @@ disa aktarma bicimleri, sesli uyarilar ve RSSI gostergesi. GUI testleri
 Qt'yi ekransiz (`QT_QPA_PLATFORM=offscreen`) calistirir ve sesli uyarilari
 sahte bir arka uca yonlendirir — test sirasinda bilgisayar konusmaz.
 
+> Acma ve test adimlarinin tamami icin: **[TEST_REHBERI.md](TEST_REHBERI.md)**
+
 ## Ozellikler
 
 | Ozellik | Nerede |
