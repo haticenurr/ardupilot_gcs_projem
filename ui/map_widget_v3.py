@@ -230,6 +230,41 @@ LEAFLET_HTML = """
         var missionEditingEnabled = true;
         var homeMarker = null;
         var geofenceCircle = null;
+        // Rally (acil inis) noktalari — failsafe'te aracin gidebilecegi yerler.
+        var rallyEditingEnabled = false;
+        var rallyMarkers = [];
+
+        function setRallyEditing(enabled) {
+            rallyEditingEnabled = enabled;
+        }
+
+        function drawRallyPoints(latlngsJson) {
+            var latlngs = JSON.parse(latlngsJson);
+            rallyMarkers.forEach(function(m) { map.removeLayer(m); });
+            rallyMarkers = [];
+            latlngs.forEach(function(p, idx) {
+                var marker = L.marker([p[0], p[1]], {
+                    icon: L.divIcon({
+                        className: 'rally-marker',
+                        html: '<div style="background:#f9e2af;color:#1e1e2e;'
+                            + 'border-radius:50%;width:24px;height:24px;'
+                            + 'display:flex;align-items:center;justify-content:center;'
+                            + 'font-weight:800;font-size:12px;'
+                            + 'border:2px solid #1e1e2e;">H</div>',
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12]
+                    })
+                }).addTo(map);
+                marker.bindTooltip('Acil inis ' + (idx + 1));
+                rallyMarkers.push(marker);
+            });
+        }
+
+        function clearRallyPoints() {
+            rallyMarkers.forEach(function(m) { map.removeLayer(m); });
+            rallyMarkers = [];
+        }
+
         var fenceEditingEnabled = false;
         var fenceEditMarkers = [];
         var fenceEditLine = L.polyline([], {color: '#fab387', weight: 2, dashArray: '4 4'}).addTo(map);
@@ -379,6 +414,10 @@ LEAFLET_HTML = """
         map.on('click', function(e) {
             var lat = e.latlng.lat.toFixed(7);
             var lon = e.latlng.lng.toFixed(7);
+            if (rallyEditingEnabled) {
+                window.location.href = "rallypoint://add?lat=" + lat + "&lon=" + lon;
+                return;
+            }
             if (fenceEditingEnabled) {
                 window.location.href = "fencepoint://add?lat=" + lat + "&lon=" + lon;
                 return;
@@ -419,6 +458,7 @@ class _NavigationInterceptPage(QWebEnginePage):
     waypoint_clicked = pyqtSignal(float, float)
     guided_goto_clicked = pyqtSignal(float, float)
     fence_point_clicked = pyqtSignal(float, float)
+    rally_point_clicked = pyqtSignal(float, float)
     def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
         print(
             f"[JS console] {message} ({sourceID}:{lineNumber})",
@@ -444,6 +484,15 @@ class _NavigationInterceptPage(QWebEnginePage):
             except (ValueError, TypeError) as e:
                 print(f"[Harita] Guided-goto koordinatlari okunamadi: {e}")
             return False
+        if url.scheme() == "rallypoint":
+            query = QUrlQuery(url)
+            lat_str = query.queryItemValue("lat")
+            lon_str = query.queryItemValue("lon")
+            try:
+                self.rally_point_clicked.emit(float(lat_str), float(lon_str))
+            except (ValueError, TypeError) as e:
+                print(f"[Harita] Rally noktasi okunamadi: {e}")
+            return False
         if url.scheme() == "fencepoint":
             query = QUrlQuery(url)
             lat_str = query.queryItemValue("lat")
@@ -460,6 +509,7 @@ class DroneMapWidget(QWebEngineView):
     waypoint_added = pyqtSignal(float, float)
     guided_goto_requested = pyqtSignal(float, float)
     fence_point_added = pyqtSignal(float, float)
+    rally_point_added = pyqtSignal(float, float)
 
     def __init__(self):
         super().__init__()
@@ -467,6 +517,7 @@ class DroneMapWidget(QWebEngineView):
         self._page.waypoint_clicked.connect(self.waypoint_added)
         self._page.guided_goto_clicked.connect(self.guided_goto_requested)
         self._page.fence_point_clicked.connect(self.fence_point_added)
+        self._page.rally_point_clicked.connect(self.rally_point_added)
         self.setPage(self._page)
         self._page.setHtml(LEAFLET_HTML, QUrl("https://localhost/"))
         self._js_ready = False
@@ -571,6 +622,19 @@ class DroneMapWidget(QWebEngineView):
 
     def clear_guided_target(self):
         self._run_js("clearGuidedTarget();")
+
+    def set_rally_editing_mode(self, enabled: bool):
+        """Acikken haritaya tiklamak rally (acil inis) noktasi ekler."""
+        self._run_js(f"setRallyEditing({'true' if enabled else 'false'});")
+
+    def update_rally_points(self, points):
+        """points: [(lat, lon), ...] — haritadaki acil inis isaretleri."""
+        js_array = json.dumps([[p[0], p[1]] for p in points])
+        escaped = js_array.replace("\\", "\\\\").replace("'", "\\'")
+        self._run_js(f"drawRallyPoints('{escaped}');")
+
+    def clear_rally_points(self):
+        self._run_js("clearRallyPoints();")
 
     def set_fence_editing_mode(self, enabled: bool):
         value = "true" if enabled else "false"

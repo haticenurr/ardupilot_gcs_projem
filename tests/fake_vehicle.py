@@ -14,6 +14,14 @@ import socket
 import threading
 import time
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# pymavlink'ten ONCE: MAVLink 2 diyalektini secer (bkz. core/mavlink_env.py)
+import core.mavlink_env  # noqa: F401
+
 from pymavlink import mavutil
 
 
@@ -59,6 +67,11 @@ class FakeVehicle:
         self.mission_protocol = False
         self.mission_delay = 0.0
         self._mission_count = 0
+        self._mission_type = 0
+        # Yuklenen item'lar tipe gore saklanir; indirme istegi geldiginde
+        # geri servis edilir. Boylece gidis-donus (yukle -> indir) testi
+        # gercek bir FC'ye yakin davranir.
+        self.stored_items = {}
 
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
@@ -102,25 +115,59 @@ class FakeVehicle:
             int(self.arm_ack_result),
         )
 
+    @staticmethod
+    def _mission_type_of(msg):
+        return int(getattr(msg, "mission_type", 0) or 0)
+
     def _handle_mission(self, msg):
         t = msg.get_type()
-        if t not in ("MISSION_CLEAR_ALL", "MISSION_COUNT", "MISSION_ITEM_INT"):
+        ilgili = (
+            "MISSION_CLEAR_ALL", "MISSION_COUNT", "MISSION_ITEM_INT",
+            "MISSION_REQUEST_LIST", "MISSION_REQUEST_INT",
+        )
+        if t not in ilgili:
             return
         if self.mission_delay:
             time.sleep(self.mission_delay)
+        tip = self._mission_type_of(msg)
+
         if t == "MISSION_CLEAR_ALL":
-            self.conn.mav.mission_ack_send(255, 0, mavutil.mavlink.MAV_MISSION_ACCEPTED)
+            self.stored_items.pop(tip, None)
+            self.conn.mav.mission_ack_send(
+                255, 0, mavutil.mavlink.MAV_MISSION_ACCEPTED, tip
+            )
+
         elif t == "MISSION_COUNT":
             self._mission_count = int(msg.count)
-            self.conn.mav.mission_request_int_send(255, 0, 0)
+            self._mission_type = tip
+            self.stored_items[tip] = {}
+            self.conn.mav.mission_request_int_send(255, 0, 0, tip)
+
         elif t == "MISSION_ITEM_INT":
+            self.stored_items.setdefault(tip, {})[int(msg.seq)] = msg
             nxt = int(msg.seq) + 1
             if nxt < self._mission_count:
-                self.conn.mav.mission_request_int_send(255, 0, nxt)
+                self.conn.mav.mission_request_int_send(255, 0, nxt, tip)
             else:
                 self.conn.mav.mission_ack_send(
-                    255, 0, mavutil.mavlink.MAV_MISSION_ACCEPTED
+                    255, 0, mavutil.mavlink.MAV_MISSION_ACCEPTED, tip
                 )
+
+        elif t == "MISSION_REQUEST_LIST":
+            kayitli = self.stored_items.get(tip, {})
+            self.conn.mav.mission_count_send(255, 0, len(kayitli), tip)
+
+        elif t == "MISSION_REQUEST_INT":
+            kayitli = self.stored_items.get(tip, {})
+            item = kayitli.get(int(msg.seq))
+            if item is None:
+                return
+            self.conn.mav.mission_item_int_send(
+                255, 0, int(item.seq), int(item.frame), int(item.command),
+                0, int(item.autocontinue),
+                item.param1, item.param2, item.param3, item.param4,
+                int(item.x), int(item.y), float(item.z), tip,
+            )
 
     def send_heartbeat(self):
         base_mode = mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
@@ -153,6 +200,25 @@ class FakeVehicle:
             bits, bits, bits, 250,
             int(voltage_v * 1000), -1, int(battery_remaining),
             0, 0, 0, 0, 0, 0,
+        )
+
+    def send_battery_status(self, voltaj=22.2, akim_a=18.0, tuketilen_mah=1200,
+                            kalan_yuzde=64, hucre=6):
+        """Ayrintili pil raporu: anlik akim ve harcanan mAh icerir."""
+        gerilimler = [int(voltaj / hucre * 1000)] * hucre + [65535] * (10 - hucre)
+        # NOT: bu pymavlink surumunun BATTERY_STATUS tanimi time_remaining
+        # ve charge_state alanlarini icermiyor; cozumleyici zaten getattr
+        # ile bu alanlarin yoklugunu tolere ediyor.
+        self.conn.mav.battery_status_send(
+            0,                              # id
+            mavutil.mavlink.MAV_BATTERY_FUNCTION_ALL,
+            mavutil.mavlink.MAV_BATTERY_TYPE_LIPO,
+            2500,                           # sicaklik (santiderece)
+            gerilimler,
+            -1 if akim_a is None else int(akim_a * 100),
+            -1 if tuketilen_mah is None else int(tuketilen_mah),
+            -1,                             # energy_consumed
+            -1 if kalan_yuzde is None else int(kalan_yuzde),
         )
 
     def send_radio_status(self, rssi=200, remrssi=180, noise=20, remnoise=25, rxerrors=0):

@@ -149,6 +149,61 @@ def dogrula_mission(drone):
     )
 
 
+def dogrula_fence_ve_rally(drone):
+    """En kritik regresyon: poligon fence ve rally noktalari KENDI
+    tablolarina yazilmali, gorev tablosunu EZMEMELI.
+
+    MAVLink 1 diyalekti altinda mission_type parametresi sessizce
+    force_mavlink1'e dusuyordu ve fence yuklemek ucus gorevini siliyordu.
+    """
+    print(f"\n{SARI}6. Poligon fence / rally — dogru tabloya yaziliyor mu?{SIFIRLA}")
+
+    gorev = [
+        (-35.36200, 149.16500, 30.0),
+        (-35.36300, 149.16600, 40.0),
+    ]
+    ok, mesaj = drone.upload_mission(gorev)
+    bildir("Once gorev yuklendi", ok, mesaj)
+    if not ok:
+        return
+
+    poligon = [
+        (-35.3600, 149.1600),
+        (-35.3600, 149.1700),
+        (-35.3700, 149.1700),
+        (-35.3700, 149.1600),
+    ]
+    ok, mesaj = drone.upload_fence_polygon(poligon)
+    bildir("Poligon fence yuklendi", ok, mesaj)
+
+    rally = [(-35.3650, 149.1650, 25.0)]
+    ok, mesaj = drone.upload_rally_points(rally)
+    bildir("Rally noktasi yuklendi", ok, mesaj)
+
+    # ASIL KONTROL: fence/rally yuklemesi gorevi bozdu mu?
+    ok, mesaj, geri = drone.download_mission()
+    korundu = ok and len(geri) == len(gorev)
+    bildir(
+        "Gorev, fence/rally yuklemesinden SONRA hala yerinde",
+        korundu,
+        f"{len(geri) if ok else 0} nokta okundu (beklenen {len(gorev)})",
+    )
+
+    ok, mesaj, fence_geri = drone.download_fence_polygon()
+    bildir(
+        "Poligon fence geri okundu",
+        ok and len(fence_geri) == len(poligon),
+        f"{len(fence_geri)} nokta (beklenen {len(poligon)})",
+    )
+
+    ok, mesaj, rally_geri = drone.download_rally_points()
+    bildir(
+        "Rally noktalari geri okundu",
+        ok and len(rally_geri) == len(rally),
+        f"{len(rally_geri)} nokta (beklenen {len(rally)})",
+    )
+
+
 def dogrula_accel_cal(drone):
     print(f"\n{SARI}3. Ivmeolcer kalibrasyonu{SIFIRLA}")
     print("   NOT: SITL'de arac fiziksel olarak cevrilemedigi icin 6 pozisyonun")
@@ -268,6 +323,7 @@ def main():
         dogrula_telemetri(drone)
         dogrula_rtl_alt(drone)
         dogrula_mission(drone)
+        dogrula_fence_ve_rally(drone)
         dogrula_accel_cal(drone)
         dogrula_mag_cal(drone)
     finally:

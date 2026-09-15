@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 
 from PyQt5.QtCore import QThread, Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QFont, QKeySequence, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -37,6 +37,7 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QTabWidget,
     QVBoxLayout,
+    QShortcut,
     QWidget,
 )
 
@@ -49,6 +50,11 @@ from ui.connection_dialog import ConnectionDialog
 from core.flight_logger import FlightLogger
 from core.app_paths import logs_dir
 from core.mission_planner import haversine_m
+from core.battery import (
+    eve_donus_tahmini,
+    kalan_mah,
+    kalan_ucus_suresi_s,
+)
 from core.voice_alerts import VoiceAlerts
 from ui.artificial_horizon import ArtificialHorizon
 from ui.replay_panel import ReplayPanel
@@ -211,6 +217,9 @@ class TelemetryWorker(QThread):
     fence_polygon_upload_result = pyqtSignal(bool, str)
     fence_polygon_download_result = pyqtSignal(bool, str, list)
     fence_polygon_clear_result = pyqtSignal(bool, str)
+    rally_upload_result = pyqtSignal(bool, str)
+    rally_download_result = pyqtSignal(bool, str, list)
+    rally_clear_result = pyqtSignal(bool, str)
     
 
     def __init__(self, connection_string=UDP_ENDPOINT):
@@ -405,7 +414,18 @@ class TelemetryWorker(QThread):
                 self.fence_polygon_download_result.emit(success, message, points)
             elif name == "clear_fence_polygon":
                 success, message = self.drone.clear_fence_polygon()
-                self.fence_polygon_clear_result.emit(success, message)                
+                self.fence_polygon_clear_result.emit(success, message)
+            elif name == "upload_rally":
+                success, message = self.drone.upload_rally_points(
+                    cmd.get("points") or []
+                )
+                self.rally_upload_result.emit(success, message)
+            elif name == "download_rally":
+                success, message, points = self.drone.download_rally_points()
+                self.rally_download_result.emit(success, message, points)
+            elif name == "clear_rally":
+                success, message = self.drone.clear_rally_points()
+                self.rally_clear_result.emit(success, message)                
         except Exception as e:
             print(f"[TelemetryWorker] Komut hatasi ({name}): {e}")
             if name == "upload_mission":
@@ -651,7 +671,16 @@ class TelemetryWorker(QThread):
         self.enqueue(cmd="download_fence_polygon")
 
     def clear_fence_polygon(self):
-        self.enqueue(cmd="clear_fence_polygon")        
+        self.enqueue(cmd="clear_fence_polygon")
+
+    def upload_rally(self, points):
+        self.enqueue(cmd="upload_rally", points=points)
+
+    def download_rally(self):
+        self.enqueue(cmd="download_rally")
+
+    def clear_rally(self):
+        self.enqueue(cmd="clear_rally")        
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -705,6 +734,13 @@ class MainWindow(QMainWindow):
         self._conn_alarm_timer.timeout.connect(self._toggle_connection_alarm) 
         self.current_satellites = None
         self.current_rssi = None
+        # Ayrintili pil verisi (BATTERY_STATUS). SYS_STATUS'un yuzde
+        # tahmininden farkli olarak anlik akim ve harcanan mAh icerir.
+        self.battery_current_a = None
+        self.battery_consumed_mah = None
+        self.battery_voltage = None
+        self.battery_capacity_mah = None
+        self._return_warned = False
         self._flight_max_alt = None
         self._flight_max_speed = None
         self._flight_min_battery = None
@@ -723,9 +759,13 @@ class MainWindow(QMainWindow):
         self.param_editor_dialog = None
         self.calibration_dialog = None
         self.fence_polygon_points = []
-        self.polygon_edit_active = False        
+        self.polygon_edit_active = False
+        # Acil inis (rally) noktalari: [(lat, lon, alt), ...]
+        self.rally_points = []
+        self.rally_edit_active = False        
         self._fence_type_pending_polygon_fix = False
         self.setup_ui()
+        self._setup_shortcuts()
         self._start_worker()
 
     def _start_worker(self):
@@ -741,7 +781,10 @@ class MainWindow(QMainWindow):
         self.worker.goto_result.connect(self.on_goto_result)
         self.worker.fence_polygon_upload_result.connect(self.on_fence_polygon_upload_result)
         self.worker.fence_polygon_download_result.connect(self.on_fence_polygon_download_result)   
-        self.worker.fence_polygon_clear_result.connect(self.on_fence_polygon_clear_result)     
+        self.worker.fence_polygon_clear_result.connect(self.on_fence_polygon_clear_result)
+        self.worker.rally_upload_result.connect(self.on_rally_upload_result)
+        self.worker.rally_download_result.connect(self.on_rally_download_result)
+        self.worker.rally_clear_result.connect(self.on_rally_clear_result)
         self.worker.start()
 
     def _disconnect_worker(self, worker):
@@ -759,6 +802,9 @@ class MainWindow(QMainWindow):
             worker.fence_polygon_upload_result,
             worker.fence_polygon_download_result,
             worker.fence_polygon_clear_result,
+            worker.rally_upload_result,
+            worker.rally_download_result,
+            worker.rally_clear_result,
         ):
             try:
                 signal.disconnect()
@@ -818,7 +864,8 @@ class MainWindow(QMainWindow):
         self.map_widget.waypoint_added.connect(self.mission_panel.add_waypoint)
         self.map_widget.set_mission_editing(False)
         self.map_widget.guided_goto_requested.connect(self.on_guided_goto_requested)
-        self.map_widget.fence_point_added.connect(self.on_fence_point_added)        
+        self.map_widget.fence_point_added.connect(self.on_fence_point_added)
+        self.map_widget.rally_point_added.connect(self.on_rally_point_added)        
         mission_page = self._wrap_scroll(self.mission_panel)
 
         self.safety_panel = PrearmPanel()
@@ -829,7 +876,12 @@ class MainWindow(QMainWindow):
         self.safety_panel.polygon_undo_requested.connect(self.on_polygon_undo_requested)
         self.safety_panel.polygon_clear_requested.connect(self.on_polygon_clear_requested)
         self.safety_panel.polygon_upload_requested.connect(self.on_polygon_upload_requested)
-        self.safety_panel.polygon_download_requested.connect(self.on_polygon_download_requested)        
+        self.safety_panel.polygon_download_requested.connect(self.on_polygon_download_requested)
+        self.safety_panel.rally_draw_toggled.connect(self.on_rally_draw_toggled)
+        self.safety_panel.rally_undo_requested.connect(self.on_rally_undo_requested)
+        self.safety_panel.rally_clear_requested.connect(self.on_rally_clear_requested)
+        self.safety_panel.rally_upload_requested.connect(self.on_rally_upload_requested)
+        self.safety_panel.rally_download_requested.connect(self.on_rally_download_requested)        
         safety_page = self._wrap_scroll(self.safety_panel)
 
         self.event_log_panel = EventLogPanel()
@@ -979,6 +1031,13 @@ class MainWindow(QMainWindow):
         self.card_wp_dist = StatCard("Hedefe Mesafe", "m", "#f9e2af")
         self.card_home_dist = StatCard("Eve Mesafe", "m", "#a6e3a1")
         self.card_rssi = StatCard("Sinyal", "%", "#94e2d5")
+        self.card_current = StatCard("Akim", "A", "#fab387")
+        self.card_consumed = StatCard("Tuketilen", "mAh", "#f9e2af")
+        self.card_endurance = StatCard("Kalan Sure", "dk", "#a6e3a1")
+        self.card_endurance.setToolTip(
+            "Mevcut akim cekisiyle kalan ucus suresi. Eve donmeye pil "
+            "yetmiyorsa kart kirmiziya doner."
+        )
         self.card_rssi.setToolTip(
             "Telemetri radyosunun sinyal gucu (RADIO_STATUS). "
             "SITL bu mesaji uretmez, o yuzden simulasyonda '--' kalir."
@@ -987,7 +1046,8 @@ class MainWindow(QMainWindow):
         for card in (
             self.card_alt, self.card_gs, self.card_hdg, self.card_bat,
             self.card_gps, self.card_wp, self.card_wp_dist, self.card_home_dist,
-            self.card_rssi,
+            self.card_rssi, self.card_current, self.card_consumed,
+            self.card_endurance,
         ):
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -1000,6 +1060,9 @@ class MainWindow(QMainWindow):
         cards.addWidget(self.card_wp_dist, 3, 0)
         cards.addWidget(self.card_home_dist, 3, 1)
         cards.addWidget(self.card_rssi, 4, 0)
+        cards.addWidget(self.card_current, 4, 1)
+        cards.addWidget(self.card_consumed, 5, 0)
+        cards.addWidget(self.card_endurance, 5, 1)
         layout.addLayout(cards)
 
         attitude_group = QGroupBox("Yonelim")
@@ -1354,6 +1417,74 @@ class MainWindow(QMainWindow):
         else:
             self.card_home_dist.set_value("--")
 
+    def _refresh_battery_cards(self):
+        """Akim / tuketilen / kalan sure kartlarini ve eve donus uyarisini
+        gunceller. Eksik veriyle tahmin URETILMEZ; bilinmeyen degerler
+        '--' kalir, cunku yanlis bir menzil tahmini pilota sahte guven
+        verir."""
+        akim = self.battery_current_a
+        self.card_current.set_value("--" if akim is None else f"{akim:.1f}")
+
+        tuketilen = self.battery_consumed_mah
+        self.card_consumed.set_value(
+            "--" if tuketilen is None else f"{tuketilen:.0f}"
+        )
+
+        kalan = kalan_mah(self.battery_capacity_mah, tuketilen)
+        sure_s = kalan_ucus_suresi_s(kalan, akim)
+        if sure_s is None:
+            self.card_endurance.set_value("--")
+            self.card_endurance.set_accent("#6c7086")
+        else:
+            self.card_endurance.set_value(f"{sure_s / 60:.0f}")
+            self.card_endurance.set_accent(
+                "#f38ba8" if sure_s < 120 else
+                "#f9e2af" if sure_s < 300 else "#a6e3a1"
+            )
+
+        self._check_return_range(kalan, akim)
+
+    def _check_return_range(self, kalan_mah_degeri, akim_a):
+        """Eve donmeye pil yetiyor mu? Yetmiyorsa bir kez uyarir."""
+        if (
+            not self.is_armed
+            or self.home_lat is None
+            or self.current_lat is None
+        ):
+            return
+        mesafe = haversine_m(
+            self.current_lat, self.current_lon, self.home_lat, self.home_lon
+        )
+        tahmin = eve_donus_tahmini(
+            mesafe_m=mesafe,
+            hiz_ms=self.cruise_speed_ms or 5.0,
+            akim_a=akim_a,
+            kalan_mah_degeri=kalan_mah_degeri,
+            kapasite_mah=self.battery_capacity_mah,
+        )
+        if not tahmin["hesaplanabildi"]:
+            return
+
+        if tahmin["yeterli"]:
+            self._return_warned = False
+            return
+
+        self.card_endurance.set_accent("#f38ba8")
+        if self._return_warned:
+            return
+        self._return_warned = True
+        mesaj = (
+            f"EVE DONUS RISKI: {mesafe:.0f} m uzaktasiniz, donus icin "
+            f"~{tahmin['gereken_mah']:.0f} mAh gerekiyor, "
+            f"kalan {kalan_mah_degeri:.0f} mAh"
+        )
+        self.event_log_panel.add_event(mesaj, success=False)
+        self.show_transient_status(mesaj, 8000, success=False)
+        self.voice.say(
+            "Dikkat, eve donmeye pil yetmeyebilir",
+            key="eve_donus", min_interval_s=45,
+        )
+
     def _push_mission_context(self):
         """Gorev analizinin ihtiyac duydugu baglami MissionPanel'e aktarir:
         home konumu, geofence sinirlari ve seyir hizi."""
@@ -1385,6 +1516,137 @@ class MainWindow(QMainWindow):
             self.map_widget.update_geofence(self.home_lat, self.home_lon, self.fence_radius)
         else:
             self.map_widget.clear_geofence()
+
+    # ------------------------------------------------------------------
+    # Acil klavye kisayollari
+    # ------------------------------------------------------------------
+
+    def _setup_shortcuts(self):
+        """Acil durumda fare aramadan komut vermek icin. Onay pencereleri
+        KORUNUR — kisayol, komutu dogrudan degil, ilgili butonun normal
+        akisini tetikler."""
+        tanimlar = [
+            ("Ctrl+R", self.on_rtl_clicked, "RTL (eve don)"),
+            ("Ctrl+L", self.on_land_clicked, "LAND (bulundugun yere in)"),
+            ("Ctrl+Shift+D", self._shortcut_disarm, "DISARM"),
+            ("Ctrl+K", self.on_preflight_check_clicked, "Ucus oncesi kontrol"),
+            ("Ctrl+E", self.on_last_summary_clicked, "Son ucus ozeti"),
+        ]
+        self._shortcuts = []
+        for dizi, islev, aciklama in tanimlar:
+            kisayol = QShortcut(QKeySequence(dizi), self)
+            kisayol.setContext(Qt.ApplicationShortcut)
+            kisayol.activated.connect(islev)
+            self._shortcuts.append(kisayol)
+
+        # Butonlarin ipuclarina kisayollari yaz.
+        self.btn_rtl.setToolTip(
+            (self.btn_rtl.toolTip() + "\n" if self.btn_rtl.toolTip() else "")
+            + "Kisayol: Ctrl+R"
+        )
+        self.btn_land.setToolTip(
+            (self.btn_land.toolTip() + "\n" if self.btn_land.toolTip() else "")
+            + "Kisayol: Ctrl+L"
+        )
+        self.btn_preflight_check.setToolTip("Kisayol: Ctrl+K")
+        self.btn_arm.setToolTip("DISARM kisayolu: Ctrl+Shift+D")
+
+    def _shortcut_disarm(self):
+        """DISARM kisayolu yalnizca ARM durumdayken is yapar; ARM etmeyi
+        kisayola baglamak kazara motor calistirma riski dogurur."""
+        if not self.is_armed:
+            self.show_transient_status("Arac zaten DISARMED", 2000)
+            return
+        self.on_arm_disarm_clicked()
+
+    # ------------------------------------------------------------------
+    # Acil inis (rally) noktalari
+    # ------------------------------------------------------------------
+
+    def on_rally_draw_toggled(self, enabled: bool):
+        self.rally_edit_active = enabled
+        self.map_widget.set_rally_editing_mode(enabled)
+        # Ayni anda tek bir harita tiklama modu acik olmali.
+        if enabled:
+            if self.polygon_edit_active:
+                self.polygon_edit_active = False
+                self.map_widget.set_fence_editing_mode(False)
+                self.safety_panel.polygon_draw_btn.setChecked(False)
+            if self.guided_click_active:
+                self.guided_click_active = False
+                self.btn_guided_click.setChecked(False)
+                self.btn_guided_click.setText("TIKLA VE GIT: KAPALI")
+        self.safety_panel.set_rally_draw_active(enabled)
+        self.show_transient_status(
+            "Rally ekleme acik: haritaya tiklayin" if enabled
+            else "Rally ekleme kapatildi",
+            2500,
+        )
+
+    def on_rally_point_added(self, lat: float, lon: float):
+        if not self.rally_edit_active:
+            return
+        # Rally irtifasi, aracin noktaya yaklasirken kullanacagi irtifadir.
+        irtifa = float(self.spin_takeoff_alt.value())
+        self.rally_points.append((lat, lon, irtifa))
+        self.safety_panel.set_rally_count(len(self.rally_points))
+        self.map_widget.update_rally_points(self.rally_points)
+        self.event_log_panel.add_event(
+            f"Rally noktasi eklendi: {lat:.6f}, {lon:.6f}", success=True
+        )
+
+    def on_rally_undo_requested(self):
+        if not self.rally_points:
+            return
+        self.rally_points.pop()
+        self.safety_panel.set_rally_count(len(self.rally_points))
+        self.map_widget.update_rally_points(self.rally_points)
+
+    def on_rally_clear_requested(self):
+        self.rally_points = []
+        self.safety_panel.set_rally_count(0)
+        self.map_widget.clear_rally_points()
+        self.show_transient_status("Rally noktalari temizlendi (yerel)", 2500)
+
+    def on_rally_upload_requested(self):
+        if not self.worker or not self.connected:
+            self.show_transient_status("Baglanti yok: rally yuklenemedi", 3000, success=False)
+            return
+        if not self.rally_points:
+            # FC'deki kayitli noktalari silmek ayri bir istektir; bos liste
+            # yuklemek yerine kullaniciyi yonlendiriyoruz.
+            self.show_transient_status(
+                "Once haritaya en az 1 rally noktasi ekleyin", 3000, success=False
+            )
+            return
+        self.worker.upload_rally(self.rally_points)
+        self.show_transient_status(
+            f"{len(self.rally_points)} rally noktasi yukleniyor...", 3000
+        )
+
+    def on_rally_download_requested(self):
+        if not self.worker or not self.connected:
+            self.show_transient_status("Baglanti yok: rally indirilemedi", 3000, success=False)
+            return
+        self.worker.download_rally()
+        self.show_transient_status("Rally noktalari indiriliyor...", 3000)
+
+    def on_rally_upload_result(self, success: bool, message: str):
+        self.event_log_panel.add_event(message, success=success)
+        self.show_transient_status(message, 4000, success=success)
+
+    def on_rally_download_result(self, success: bool, message: str, points):
+        self.event_log_panel.add_event(message, success=success)
+        self.show_transient_status(message, 4000, success=success)
+        if not success:
+            return
+        self.rally_points = [tuple(p) for p in points]
+        self.safety_panel.set_rally_count(len(self.rally_points))
+        self.map_widget.update_rally_points(self.rally_points)
+
+    def on_rally_clear_result(self, success: bool, message: str):
+        self.event_log_panel.add_event(message, success=success)
+        self.show_transient_status(message, 4000, success=success)
 
     def on_fence_settings_changed(self, enabled: bool, radius_m: float):
         if not self.worker or not self.connected:
@@ -1705,6 +1967,8 @@ class MainWindow(QMainWindow):
             self.worker.enqueue(cmd="request_failsafe_params")
             # Gorev suresi tahmini icin seyir hizi.
             self.worker.request_single_param("WPNAV_SPEED")
+            # Kalan mAh ve eve donus hesabi icin paket kapasitesi.
+            self.worker.request_single_param("BATT_CAPACITY")
             if self._pending_mission_clear_on_connect:
                 # Yeniden baglanildiginda onceki oturumdan kalma eski
                 # gorevin FC'de asili kalmamasi icin otomatik temizle.
@@ -1900,6 +2164,15 @@ class MainWindow(QMainWindow):
             else:
                 self.card_gps.set_accent("#cba6f7")
 
+        elif msg_type == "BATTERY_STATUS":
+            if data.get("akim_a") is not None:
+                self.battery_current_a = data["akim_a"]
+            if data.get("tuketilen_mah") is not None:
+                self.battery_consumed_mah = data["tuketilen_mah"]
+            if data.get("voltaj") is not None:
+                self.battery_voltage = data["voltaj"]
+            self._refresh_battery_cards()
+
         elif msg_type == "RADIO_STATUS":
             # Yerel ve uzak ucun DUSUK olani baglantinin gercek kalitesini
             # belirler; zayif yon hangisiyse onu gosteriyoruz.
@@ -1939,6 +2212,9 @@ class MainWindow(QMainWindow):
             elif pid == "FENCE_ALT_MAX":
                 self.fence_alt_max = data["value"]
                 self._push_mission_context()
+            elif pid == "BATT_CAPACITY":
+                self.battery_capacity_mah = float(data["value"]) or None
+                self._refresh_battery_cards()
             elif pid == "WPNAV_SPEED":
                 # FC bu degeri cm/s tutar.
                 self.cruise_speed_ms = float(data["value"]) / 100.0

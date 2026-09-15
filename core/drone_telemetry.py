@@ -9,6 +9,11 @@ dokunmalidir. GUI dogrudan takeoff / download cagirmamalidir.
 
 import time
 
+# pymavlink'ten ONCE import edilmeli: MAVLink 2 diyalektini secer.
+# MAVLink 1 altinda gorev mesajlarinin mission_type alani yoktur ve
+# fence/rally yuklemeleri sessizce GOREV tablosuna yazilir.
+from core import mavlink_env  # noqa: F401
+
 from pymavlink import mavutil
 
 # GCS / gimbal / kamera HEARTBEAT'leri ARM bayragini tasimaz. Bunlar
@@ -117,7 +122,12 @@ _TELEMETRY_TYPES = [
     "MAG_CAL_REPORT",
     "RADIO_STATUS",
     "COMMAND_LONG",
+    "BATTERY_STATUS",
 ]
+
+# BATTERY_STATUS.voltages dizisinde kullanilmayan hucreler bu degerle
+# doldurulur; toplama katilmamalidir.
+HUCRE_GERILIMI_GECERSIZ = 65535
 
 # Telemetri radyosunun (SiK vb.) sinyal gucu 0-255 araliginda raporlanir.
 # Yuzdeye cevirmek icin kullanilan olcek. SITL bu mesaji URETMEZ; veri
@@ -375,6 +385,36 @@ class DroneTelemetry:
                 "cal_status": int(msg.cal_status),
                 "autosaved": bool(msg.autosaved),
                 "fitness": float(msg.fitness),
+            }
+
+        elif msg_type == "BATTERY_STATUS":
+            # SYS_STATUS yalnizca otopilotun yuzde TAHMININI verir ve
+            # gerilime gore sicrar. Gercek karar (kalan sure, eve donus)
+            # buradaki anlik akim ve harcanan mAh ile verilir.
+            gerilimler = [
+                v for v in msg.voltages if v != HUCRE_GERILIMI_GECERSIZ
+            ]
+            voltaj = sum(gerilimler) / 1000.0 if gerilimler else None
+
+            # current_battery santiamper (10 mA) birimindedir; -1 bilinmiyor.
+            akim_ham = int(msg.current_battery)
+            akim_a = None if akim_ham < 0 else akim_ham / 100.0
+
+            tuketilen = int(msg.current_consumed)
+            tuketilen_mah = None if tuketilen < 0 else float(tuketilen)
+
+            kalan_yuzde = int(msg.battery_remaining)
+            kalan_sure = int(getattr(msg, "time_remaining", 0) or 0)
+
+            return {
+                "type": "BATTERY_STATUS",
+                "voltaj": voltaj,
+                "akim_a": akim_a,
+                "tuketilen_mah": tuketilen_mah,
+                "kalan_yuzde": None if kalan_yuzde < 0 else kalan_yuzde,
+                "hucre_sayisi": len(gerilimler),
+                # FC kendi tahminini veriyorsa (0 = tahmin yok)
+                "fc_kalan_sure_s": kalan_sure or None,
             }
 
         elif msg_type == "RADIO_STATUS":
@@ -772,6 +812,170 @@ class DroneTelemetry:
             return False, f"Gorev temizleme reddedildi (hata kodu: {ack.type})"
         except Exception as e:
             return False, f"Gorev temizleme hatasi: {e}"
+
+    def _upload_mission_type(self, count, mission_type, item_gonder, ad):
+        """Mission protokolunun ortak yukleme dongusu.
+
+        Gorev, poligon fence ve rally noktalari AYNI protokolu kullanir;
+        yalnizca mission_type ve gonderilen item farklidir. Dongu tek
+        yerde durursa, telemetri akitma (_recv_match_pumped) ve deneme
+        siniri gibi davranislar ucunde de ayni olur.
+
+        item_gonder(seq): istenen sirayi FC'ye gonderen fonksiyon.
+        """
+        self.master.mav.mission_clear_all_send(
+            self.master.target_system, self.master.target_component, mission_type
+        )
+        self._recv_match_pumped("MISSION_ACK", 2)
+
+        self.master.mav.mission_count_send(
+            self.master.target_system,
+            self.master.target_component,
+            count,
+            mission_type,
+        )
+
+        max_retries = count * 3 + 10
+        attempts = 0
+        while attempts < max_retries:
+            attempts += 1
+            msg = self._recv_match_pumped(
+                ["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"], 5
+            )
+            if msg is None:
+                return False, "Zaman asimi: drondan cevap gelmedi"
+            if msg.get_type() == "MISSION_ACK":
+                if msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
+                    return True, f"{count} {ad} yuklendi"
+                return False, f"{ad} reddedildi (hata kodu: {msg.type})"
+            seq = msg.seq
+            if seq >= count:
+                continue
+            item_gonder(seq)
+        return False, f"Cok fazla deneme yapildi, {ad} tamamlanamadi"
+
+    def _download_mission_type(self, mission_type, komut, ad):
+        """Mission protokolunun ortak indirme dongusu.
+        Donus: (ok, mesaj, [MISSION_ITEM_INT, ...])"""
+        self._drain_pending()
+        self.master.mav.mission_request_list_send(
+            self.master.target_system, self.master.target_component, mission_type
+        )
+        count_msg = self._recv_match_pumped("MISSION_COUNT", 5)
+        if count_msg is None:
+            return False, "MISSION_COUNT gelmedi (zaman asimi)", []
+        count = int(count_msg.count)
+        if count <= 0:
+            return True, f"FC'de kayitli {ad} yok", []
+
+        item_ler = []
+        for seq in range(count):
+            self.master.mav.mission_request_int_send(
+                self.master.target_system,
+                self.master.target_component,
+                seq,
+                mission_type,
+            )
+            item = self._recv_match_pumped(
+                ["MISSION_ITEM_INT", "MISSION_ITEM"], 5
+            )
+            if item is None:
+                return False, f"Nokta {seq} indirilemedi (zaman asimi)", []
+            if int(item.command) != komut:
+                continue
+            item_ler.append(item)
+
+        try:
+            self.master.mav.mission_ack_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_MISSION_ACCEPTED,
+                mission_type,
+            )
+        except Exception as e:
+            print(f"[DroneTelemetry] {ad} ACK gonderilemedi: {e}")
+        return True, f"{len(item_ler)} {ad} indirildi", item_ler
+
+    def _clear_mission_type(self, mission_type, ad):
+        """Mission protokolunun ortak silme islemi."""
+        try:
+            self._drain_pending()
+            self.master.mav.mission_clear_all_send(
+                self.master.target_system,
+                self.master.target_component,
+                mission_type,
+            )
+            ack = self._recv_match_pumped("MISSION_ACK", 3)
+            if ack is None:
+                return False, "Zaman asimi: MISSION_ACK gelmedi"
+            if ack.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
+                return True, f"{ad} FC'den silindi"
+            return False, f"{ad} silme reddedildi (hata kodu: {ack.type})"
+        except Exception as e:
+            return False, f"{ad} silme hatasi: {e}"
+
+    def upload_rally_points(self, points):
+        """Acil inis (rally) noktalarini FC'ye yukler.
+
+        points: [(lat, lon, alt), ...]. Failsafe tetiklendiginde ArduPilot,
+        eve donmek yerine EN YAKIN rally noktasina gidebilir; bu yuzden
+        noktalarin gercekten inise uygun yerler olmasi gerekir.
+        """
+        if not points:
+            return False, "En az 1 rally noktasi gerekli"
+
+        def gonder(seq):
+            lat, lon, alt = points[seq]
+            self.master.mav.mission_item_int_send(
+                self.master.target_system,
+                self.master.target_component,
+                seq,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                mavutil.mavlink.MAV_CMD_NAV_RALLY_POINT,
+                0,
+                1,
+                0, 0, 0, 0,
+                int(lat * 1e7),
+                int(lon * 1e7),
+                float(alt),
+                mavutil.mavlink.MAV_MISSION_TYPE_RALLY,
+            )
+
+        try:
+            return self._upload_mission_type(
+                len(points),
+                mavutil.mavlink.MAV_MISSION_TYPE_RALLY,
+                gonder,
+                "rally noktasi",
+            )
+        except Exception as e:
+            return False, f"Rally yukleme hatasi: {e}"
+
+    def download_rally_points(self):
+        """FC'deki rally noktalarini okur. Donus: (ok, mesaj, [(lat, lon, alt)])"""
+        try:
+            ok, mesaj, item_ler = self._download_mission_type(
+                mavutil.mavlink.MAV_MISSION_TYPE_RALLY,
+                mavutil.mavlink.MAV_CMD_NAV_RALLY_POINT,
+                "rally noktasi",
+            )
+            if not ok:
+                return ok, mesaj, []
+            noktalar = []
+            for item in item_ler:
+                if item.get_type() == "MISSION_ITEM_INT":
+                    noktalar.append((item.x / 1e7, item.y / 1e7, float(item.z)))
+                else:
+                    noktalar.append((float(item.x), float(item.y), float(item.z)))
+            return True, mesaj, noktalar
+        except Exception as e:
+            return False, f"Rally indirme hatasi: {e}", []
+
+    def clear_rally_points(self):
+        """FC'nin rally hafizasini siler."""
+        return self._clear_mission_type(
+            mavutil.mavlink.MAV_MISSION_TYPE_RALLY, "Rally noktalari"
+        )
 
     def upload_fence_polygon(self, points):
         """

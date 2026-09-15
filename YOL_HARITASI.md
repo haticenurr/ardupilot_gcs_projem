@@ -294,7 +294,7 @@ olarak gelir. Karar 1-6 bittikten sonra verilecek.
 
 Birinci fazin (1-6) tamamlanmasindan sonra secilen isler.
 
-## 7. Gorev modlarini gercek yap `[~]`
+## 7. Gorev modlarini gercek yap `[x]`
 
 ### Sorun
 "Standart / Arama Kurtarma / Haritalama" secicisi yalnizca bazi telemetri
@@ -332,7 +332,7 @@ Boylece yeni harita cizim altyapisi gerekmez.
 
 ---
 
-## 8. Gorev onizleme ve guvenlik analizi `[ ]`
+## 8. Gorev onizleme ve guvenlik analizi `[x]`
 
 Gorev drona YUKLENMEDEN once hesaplanir:
 - Toplam mesafe, bacak bacak mesafeler, tahmini sure
@@ -348,7 +348,7 @@ Gorev drona YUKLENMEDEN once hesaplanir:
 
 ---
 
-## 9. Pil detayi ve eve donus menzili `[ ]`
+## 9. Pil detayi ve eve donus menzili `[x]`
 
 Su an yalnizca `SYS_STATUS`'un yuzde tahmini kullaniliyor.
 `BATTERY_STATUS` ile akim, tuketilen mAh ve kalan sure eklenecek; uzerine
@@ -360,8 +360,34 @@ Su an yalnizca `SYS_STATUS`'un yuzde tahmini kullaniliyor.
 
 ---
 
-## 10. Acil klavye kisayollari ve rally point `[ ]`
+## 10. Acil klavye kisayollari ve rally point `[x]`
 
 - Kisayollar: RTL, LAND, DISARM — fare aramadan. Onay penceresi korunur.
 - Rally point (acil inis noktalari): `MAV_MISSION_TYPE_RALLY`. Poligon
   fence ile birebir ayni protokol, kodun buyuk kismi hazir.
+
+---
+
+## Yan bulgu: MAVLink 1 diyalekti kullaniliyordu
+
+Rally noktalari eklenirken ortaya cikti: pymavlink, `MAVLINK20` ortam
+degiskeni ayarlanmamissa MAVLink 1 diyalektini yukler. MAVLink 1'de gorev
+mesajlarinin `mission_type` alani yoktur ve fonksiyon imzalarinda son
+parametre `force_mavlink1`'dir:
+
+    v1:  mission_clear_all_send(sys, comp, force_mavlink1)
+    v2:  mission_clear_all_send(sys, comp, mission_type, force_mavlink1)
+
+Kod v2 imzasina gore yazilmisti; v1 altinda `MAV_MISSION_TYPE_FENCE`
+degeri sessizce `force_mavlink1`'e gidiyordu ve mission_type hic
+gonderilmiyordu.
+
+**Olculen etki (SITL):** ArduPilot, item'in komut kimliginden dogru
+tabloyu cikarabildigi icin fence yine FENCE tablosuna ulasiyor ve ucus
+gorevi bozulmuyordu. Yani veri kaybi YOKTU — ancak davranis otopilotun
+toleransina bagliydi.
+
+**Duzeltme:** `core/mavlink_env.py` MAVLink 2 diyalektini secer ve
+pymavlink daha once import edilmis olsa bile `set_dialect` ile duzeltir
+(import sirasindan bagimsiz). `tests/test_mavlink_surumu.py` geri donusu
+engeller.

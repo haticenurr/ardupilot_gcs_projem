@@ -202,6 +202,11 @@ class PrearmPanel(QGroupBox):
     polygon_clear_requested = pyqtSignal()
     polygon_upload_requested = pyqtSignal()
     polygon_download_requested = pyqtSignal()
+    rally_draw_toggled = pyqtSignal(bool)
+    rally_undo_requested = pyqtSignal()
+    rally_clear_requested = pyqtSignal()
+    rally_upload_requested = pyqtSignal()
+    rally_download_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__("Pre-Arm / Guvenlik Kontrolleri")
@@ -326,6 +331,8 @@ class PrearmPanel(QGroupBox):
         batt_row.addStretch()
         root.addLayout(batt_row)        
 
+        self._rally_bolumu_ekle(root)
+
         poly_title = QLabel("Poligon Geofence")
         poly_title.setStyleSheet("color: #cdd6f4; font-weight: 700; font-size: 12px; margin-top: 10px;")
         root.addWidget(poly_title)
@@ -364,6 +371,73 @@ class PrearmPanel(QGroupBox):
         self.polygon_download_btn.clicked.connect(self.polygon_download_requested.emit)
         poly_btn_row2.addWidget(self.polygon_download_btn)
         root.addLayout(poly_btn_row2)
+    def _rally_bolumu_ekle(self, root):
+        """Acil inis (rally) noktalari bolumu.
+
+        ArduPilot failsafe tetiklendiginde, RTL yerine EN YAKIN rally
+        noktasina gidebilir. Bu yuzden noktalar gercekten inise uygun,
+        acik ve engelsiz yerler olmalidir."""
+        baslik = QLabel("Acil Inis Noktalari (Rally)")
+        baslik.setStyleSheet(
+            "color: #cdd6f4; font-weight: 700; font-size: 12px; margin-top: 10px;"
+        )
+        root.addWidget(baslik)
+
+        aciklama = QLabel(
+            "Failsafe durumunda arac eve degil, en yakin rally noktasina donebilir."
+        )
+        aciklama.setWordWrap(True)
+        aciklama.setStyleSheet("color: #6c7086; font-size: 10px;")
+        root.addWidget(aciklama)
+
+        self.rally_draw_btn = QPushButton("Rally Noktasi Ekle")
+        self.rally_draw_btn.setCheckable(True)
+        self.rally_draw_btn.setStyleSheet(
+            "background-color: #313244; color: #cdd6f4; font-weight: 700; "
+            "padding: 6px 12px; border-radius: 6px;"
+        )
+        self.rally_draw_btn.clicked.connect(
+            lambda: self.rally_draw_toggled.emit(self.rally_draw_btn.isChecked())
+        )
+        root.addWidget(self.rally_draw_btn)
+
+        self.rally_point_label = QLabel("0 nokta")
+        self.rally_point_label.setStyleSheet(
+            "color: #a6adc8; font-size: 11px; font-weight: 600;"
+        )
+        root.addWidget(self.rally_point_label)
+
+        satir1 = QHBoxLayout()
+        self.rally_undo_btn = QPushButton("Son Noktayi Sil")
+        self.rally_undo_btn.clicked.connect(self.rally_undo_requested.emit)
+        satir1.addWidget(self.rally_undo_btn)
+        self.rally_clear_btn = QPushButton("Temizle")
+        self.rally_clear_btn.clicked.connect(self.rally_clear_requested.emit)
+        satir1.addWidget(self.rally_clear_btn)
+        root.addLayout(satir1)
+
+        satir2 = QHBoxLayout()
+        self.rally_upload_btn = QPushButton("Rally'yi FC'ye Yukle")
+        self.rally_upload_btn.setStyleSheet(
+            "background-color: #f9e2af; color: #1e1e2e; font-weight: 800; "
+            "padding: 6px 12px; border-radius: 6px;"
+        )
+        self.rally_upload_btn.clicked.connect(self.rally_upload_requested.emit)
+        satir2.addWidget(self.rally_upload_btn)
+        self.rally_download_btn = QPushButton("FC'den Indir")
+        self.rally_download_btn.clicked.connect(self.rally_download_requested.emit)
+        satir2.addWidget(self.rally_download_btn)
+        root.addLayout(satir2)
+
+    def set_rally_count(self, sayi: int):
+        self.rally_point_label.setText(f"{sayi} nokta")
+
+    def set_rally_draw_active(self, aktif: bool):
+        self.rally_draw_btn.setChecked(bool(aktif))
+        self.rally_draw_btn.setText(
+            "Rally Ekleme: ACIK" if aktif else "Rally Noktasi Ekle"
+        )
+
     # ---------------- telemetri girisleri ----------------
 
     def set_armed(self, is_armed: bool):

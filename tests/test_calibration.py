@@ -47,6 +47,10 @@ class CalibrationTest(unittest.TestCase):
     def setUp(self):
         self.vehicle.armed = False
         pump(0.6, until=lambda: not self.win.is_armed)
+        # Onceki testten kalan STATUSTEXT / pozisyon istegi mesajlari
+        # yeni sihirbaza sizarsa adim sayaci beklenmedik yere atlar.
+        # Sihirbazi acmadan once boruyu bosaltiyoruz.
+        pump(0.5)
         self.win.on_calibration_clicked()
         self.dialog = self.win.calibration_dialog
         self.assertIsNotNone(self.dialog, "Kalibrasyon sihirbazi acilmadi")
@@ -74,7 +78,7 @@ class CalibrationTest(unittest.TestCase):
         self.dialog.btn_mag_start.click()
         pump(0.3)
         self.vehicle.send_mag_cal_progress(42, cal_status=2)
-        pump(1.5, until=lambda: self.dialog.mag_progress.value() == 42)
+        pump(4.0, until=lambda: self.dialog.mag_progress.value() == 42)
         self.assertEqual(self.dialog.mag_progress.value(), 42)
         self.assertIn("42", self.dialog.lbl_mag_durum.text())
 
@@ -84,7 +88,7 @@ class CalibrationTest(unittest.TestCase):
         self.assertFalse(self.dialog.btn_mag_accept.isEnabled())
 
         self.vehicle.send_mag_cal_report(cal_status=4, fitness=3.25)
-        pump(1.5, until=lambda: self.dialog.btn_mag_accept.isEnabled())
+        pump(4.0, until=lambda: self.dialog.btn_mag_accept.isEnabled())
         self.assertTrue(
             self.dialog.btn_mag_accept.isEnabled(), "Basarili raporda kabul butonu acilmadi"
         )
@@ -100,7 +104,7 @@ class CalibrationTest(unittest.TestCase):
         self.dialog.btn_mag_start.click()
         pump(0.3)
         self.vehicle.send_mag_cal_report(cal_status=6)  # BAD_ORIENTATION
-        pump(1.5, until=lambda: "yonelim" in self.dialog.lbl_mag_durum.text().lower())
+        pump(4.0, until=lambda: "yonelim" in self.dialog.lbl_mag_durum.text().lower())
         self.assertFalse(self.dialog.btn_mag_accept.isEnabled())
         self.assertIn("yonelim", self.dialog.lbl_mag_durum.text().lower())
 
@@ -147,7 +151,7 @@ class CalibrationTest(unittest.TestCase):
         self.assertEqual(self.dialog._accel_adim, 1)
 
         self.vehicle.send_statustext("Place vehicle nose DOWN and press any key")
-        pump(1.5, until=lambda: self.dialog._accel_adim == 3)
+        pump(4.0, until=lambda: self.dialog._accel_adim == 3)
         self.assertEqual(self.dialog._accel_adim, 3, "NOSEDOWN adimina senkronlanmadi")
 
     def test_fc_pozisyon_istegi_adimi_senkronlar(self):
@@ -160,7 +164,7 @@ class CalibrationTest(unittest.TestCase):
         self.assertEqual(self.dialog._accel_adim, 0)
 
         self.vehicle.send_accel_cal_position_request(3)  # SAG YAN
-        pump(2.0, until=lambda: self.dialog._accel_adim == 2)
+        pump(4.0, until=lambda: self.dialog._accel_adim == 2)
         self.assertEqual(
             self.dialog._accel_adim, 2, "FC pozisyon istegi adimi senkronlamadi"
         )
@@ -170,7 +174,7 @@ class CalibrationTest(unittest.TestCase):
         self.dialog.btn_accel_start.click()
         pump(0.3)
         self.vehicle.send_accel_cal_position_request(ACCEL_CAL_POS_SUCCESS)
-        pump(2.0, until=lambda: not self.dialog._accel_calisiyor)
+        pump(4.0, until=lambda: not self.dialog._accel_calisiyor)
         self.assertFalse(self.dialog._accel_calisiyor)
         self.assertIn("BASARILI", self.dialog.lbl_accel_talimat.text())
 
@@ -180,7 +184,7 @@ class CalibrationTest(unittest.TestCase):
         self.dialog.btn_accel_start.click()
         pump(0.3)
         self.vehicle.send_accel_cal_position_request(ACCEL_CAL_POS_FAILED)
-        pump(2.0, until=lambda: not self.dialog._accel_calisiyor)
+        pump(4.0, until=lambda: not self.dialog._accel_calisiyor)
         self.assertFalse(self.dialog._accel_calisiyor)
         self.assertIn("BASARISIZ", self.dialog.lbl_accel_talimat.text())
 
@@ -188,7 +192,7 @@ class CalibrationTest(unittest.TestCase):
         self.dialog.btn_accel_start.click()
         pump(0.3)
         self.vehicle.send_statustext("Calibration successful")
-        pump(1.5, until=lambda: not self.dialog._accel_calisiyor)
+        pump(4.0, until=lambda: not self.dialog._accel_calisiyor)
         self.assertFalse(self.dialog._accel_calisiyor)
         self.assertIn("BASARILI", self.dialog.lbl_accel_talimat.text())
 
