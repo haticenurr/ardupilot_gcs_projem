@@ -245,6 +245,10 @@ class TelemetryWorker(QThread):
         self._last_prearm_poll = 0.0
         # Telemetri hatalarini sessizce yutmak yerine kisik sesle raporlamak
         # icin (bkz. _log_telemetry_error).
+        # ARM reddedildiginde sebebi kullaniciya gosterebilmek icin son
+        # PreArm/Arm uyarisi burada tutulur.
+        self._last_prearm_text = ""
+        self._last_prearm_ts = 0.0
         self._last_error_sig = None
         self._last_error_ts = 0.0
         self._suppressed_errors = 0
@@ -324,6 +328,14 @@ class TelemetryWorker(QThread):
         self._process_telemetry_data(data)
         self.telemetry_signal.emit(data)
 
+    def _arm_hata_sebebi(self, taban_mesaj: str) -> str:
+        """ARM basarisizligina, varsa otopilotun bildirdigi sebebi ekler.
+        Tek basina "ARM gerceklesmedi" kullaniciya ne yapacagini
+        soylemiyordu; asil bilgi PreArm STATUSTEXT'inde."""
+        if self._last_prearm_text and (time.time() - self._last_prearm_ts) < 15.0:
+            return f"{taban_mesaj} — {self._last_prearm_text}"
+        return taban_mesaj
+
     def _log_telemetry_error(self, exc):
         """Telemetri hatalarini yutmak yerine raporlar. Dongu saniyede ~20
         kez dondugu icin ayni hata en fazla 5 saniyede bir yazdirilir;
@@ -348,6 +360,8 @@ class TelemetryWorker(QThread):
         try:
             if name == "arm":
                 success, message = self.drone.send_arm_disarm(bool(cmd.get("arm")))
+                if not success:
+                    message = self._arm_hata_sebebi(message)
                 self.arm_result.emit(success, message)
             elif name == "set_mode":
                 self.drone.set_mode(cmd.get("mode", ""))
@@ -440,6 +454,14 @@ class TelemetryWorker(QThread):
         zaman 0'a inmez). Yeni bir ARM tespit edildiginde home konumunu
         FC'den tekrar istiyoruz.
         """
+        if data.get("type") == "STATUSTEXT":
+            metin = (data.get("text") or "").strip()
+            dusuk = metin.lower()
+            if dusuk.startswith("prearm:") or dusuk.startswith("arm:"):
+                self._last_prearm_text = metin
+                self._last_prearm_ts = time.time()
+            return
+
         if data.get("type") == "HEARTBEAT":
             armed_now = bool(data.get("armed"))
             if armed_now and not self._was_armed:
@@ -489,14 +511,24 @@ class TelemetryWorker(QThread):
         """
         try:
             self.wizard_status.emit("Arm ediliyor...", True)
-            self.drone.send_arm_disarm(True)
+            # Eski kod bu donusu YOK SAYIYORDU; FC komutu aciktan
+            # reddettiginde bile 12 saniye bekleyip "ARM gerceklesmedi"
+            # diyordu ve sebebi hic gostermiyordu.
+            arm_ok, arm_mesaj = self.drone.send_arm_disarm(True)
+            if not arm_ok:
+                self.wizard_status.emit(
+                    f"Hata: {self._arm_hata_sebebi(arm_mesaj)}", False
+                )
+                return
             armed = self._wait_heartbeat(
                 lambda d: bool(d.get("armed")),
                 12.0,
                 "Arm bekleniyor...",
             )
             if not armed:
-                self.wizard_status.emit("Hata: ARM gerceklesmedi", False)
+                self.wizard_status.emit(
+                    f"Hata: {self._arm_hata_sebebi('ARM gerceklesmedi')}", False
+                )
                 return
 
             self.wizard_status.emit("GUIDED moda geciliyor...", True)
@@ -2257,7 +2289,15 @@ class MainWindow(QMainWindow):
     def on_arm_result(self, success: bool, message: str):
         self.event_log_panel.add_event(message, success=success)
         if not success:
-            self.show_transient_status(message, 4000, success=False) 
+            self.show_transient_status(message, 8000, success=False)
+            # ARM reddi sessizce gecilmemeli: sebebi (PreArm mesaji dahil)
+            # ayri bir pencerede de goster.
+            QMessageBox.warning(
+                self,
+                "ARM basarisiz",
+                f"{message}\n\nAyrintili PreArm uyarilari icin Guvenlik "
+                f"sekmesine bakin.",
+            )
 
     def on_goto_result(self, success: bool, message: str):
         self.event_log_panel.add_event(f"Tikla ve Git: {message}", success=success)

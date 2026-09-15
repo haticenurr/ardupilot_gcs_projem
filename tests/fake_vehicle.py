@@ -50,6 +50,12 @@ class FakeVehicle:
         # yanit verir. mission_delay her yanitin oncesine gecikme koyar;
         # boylece yukleme birkac heartbeat suresi kadar uzar ve bu sirada
         # telemetrinin akmaya devam ettigi olculebilir.
+        # ARM komutuna verilecek yanit. None: hic yanit verme (zaman asimi).
+        # Aksi halde COMMAND_ACK bu sonuc koduyla doner.
+        self.arm_ack_result = None
+        # ARM reddedilirken once gonderilecek PreArm uyarisi.
+        self.prearm_text = None
+
         self.mission_protocol = False
         self.mission_delay = 0.0
         self._mission_count = 0
@@ -78,6 +84,23 @@ class FakeVehicle:
                     self.received.append(msg)
                 if self.mission_protocol:
                     self._handle_mission(msg)
+                self._handle_arm(msg)
+
+    def _handle_arm(self, msg):
+        """ARM komutuna yapilandirilmis yaniti dondurur."""
+        if self.arm_ack_result is None:
+            return
+        if msg.get_type() != "COMMAND_LONG":
+            return
+        if int(msg.command) != mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
+            return
+        if self.prearm_text:
+            self.send_statustext(self.prearm_text, severity=4)
+            time.sleep(0.05)
+        self.conn.mav.command_ack_send(
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            int(self.arm_ack_result),
+        )
 
     def _handle_mission(self, msg):
         t = msg.get_type()

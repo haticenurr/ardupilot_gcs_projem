@@ -480,12 +480,19 @@ class DroneTelemetry:
         if msg.command != mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             return True, "Komut gonderildi (baska bir ACK ile karsilasildi)"
 
+        action = "ARM" if arm else "DISARM"
         if msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-            action = "ARM" if arm else "DISARM"
             return True, f"{action} basarili"
-        else:
-            action = "ARM" if arm else "DISARM"
-            return False, f"{action} reddedildi (kod: {msg.result})"
+        # Ciplak sayisal kod kullaniciya hicbir sey anlatmiyordu; MAVLink
+        # sonuc adini yaziyoruz. Asil sebep (orn. "PreArm: 3D Accel
+        # calibration needed") STATUSTEXT ile ayrica gelir ve worker
+        # tarafindan mesaja eklenir.
+        sonuc_adlari = {
+            v: k for k, v in vars(mavutil.mavlink).items()
+            if k.startswith("MAV_RESULT_")
+        }
+        sonuc = sonuc_adlari.get(msg.result, f"kod {msg.result}")
+        return False, f"{action} reddedildi ({sonuc})"
 
     def set_mode(self, mode_name: str):
         if mode_name not in self.master.mode_mapping():
