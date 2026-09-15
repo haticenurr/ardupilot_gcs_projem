@@ -80,6 +80,20 @@ LEAFLET_HTML = """
         .leaflet-control-zoom a {
             border-radius: 6px !important;
         }
+        .leaflet-control-layers {
+            background: #1e1e2e !important;
+            color: #cdd6f4 !important;
+            border: 1px solid #313244 !important;
+            border-radius: 8px !important;
+        }
+        .leaflet-control-layers-toggle {
+            background-color: #1e1e2e !important;
+            border-radius: 8px !important;
+        }
+        .leaflet-control-layers label {
+            color: #cdd6f4 !important;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -87,10 +101,32 @@ LEAFLET_HTML = """
     <script>
         var map = L.map('map', { zoomControl: true }).setView([0, 0], 2);
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 20,
-            attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap katkida bulunanlar'
-        }).addTo(map);
+        // Alt katmanlar. CARTO basemap'leri artik API anahtari istiyor ve
+        // anahtarsiz istekte doselemelerin uzerine "API KEY REQUIRED"
+        // filigrani basiyor; bu yuzden anahtar gerektirmeyen iki kaynak
+        // kullaniliyor. Uydu goruntusu drone operasyonunda arazi/engel
+        // gormek icin varsayilan secildi.
+        var uyduKatmani = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            {
+                maxZoom: 20,
+                attribution: 'Goruntu &copy; Esri, Maxar, Earthstar Geographics'
+            }
+        );
+        var sokakKatmani = L.tileLayer(
+            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap katkida bulunanlar'
+            }
+        );
+
+        uyduKatmani.addTo(map);
+        L.control.layers(
+            { 'Uydu': uyduKatmani, 'Sokak': sokakKatmani },
+            null,
+            { position: 'topright', collapsed: true }
+        ).addTo(map);
 
         var droneMarker = null;
         var flightPath = L.polyline([], {color: '#2980b9', weight: 3, opacity: 0.8}).addTo(map);
