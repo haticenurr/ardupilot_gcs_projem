@@ -1,24 +1,13 @@
 """
 mission_planner.py
 -------------------
-Otomatik rota uretimi (gorev modlarinin asil isi).
+Otomatik rota uretimi: `survey_grid` (alan tarama, Haritalama modu) ve
+`expanding_square` (arama deseni, Arama Kurtarma modu).
 
-Iki desen uretilir:
-  - `survey_grid`      : bir poligonun icini tarayan gidis-donus rotasi
-                         (boustrophedon / "cim bicme" deseni) — Haritalama
-  - `expanding_square` : merkezden disa dogru genisleyen kare deseni —
-                         Arama Kurtarma
+Saf fonksiyonlardir; Qt ve MAVLink bilmez, dogrudan test edilir.
 
-Modul saf fonksiyonlardan olusur: Qt bilmez, MAVLink'e dokunmaz, dosya
-yazmaz. Bu sayede geometri dogrudan ve hizli test edilebilir.
-
-KOORDINAT SISTEMI
------------------
-Hesaplar, ilgilenilen bolgenin merkezine oturtulmus YEREL DUZLEMDE
-(metre) yapilir. Kucuk alanlarda (birkac kilometre) esdikdortgen
-izdusum yeterince dogrudur ve kod cok daha anlasilir olur:
-
-    x -> dogu (metre),  y -> kuzey (metre)
+Hesaplar bolge merkezine oturtulmus yerel duzlemde (x = dogu, y = kuzey,
+metre) yapilir; kucuk alanlarda esdikdortgen izdusum yeterince dogrudur.
 """
 
 import math
@@ -48,10 +37,8 @@ def to_latlon(x, y, lat0, lon0):
 def haversine_m(lat1, lon1, lat2, lon2):
     """Iki WGS84 noktasi arasindaki buyuk daire mesafesi (metre).
 
-    NOT: iki nokta birbirine COK yaklastiginda ondalik yuvarlama hatasi
-    'a' degerini ufak NEGATIF bir sayi yapabiliyor (orn. -1e-16) ve
-    math.sqrt(negatif) "math domain error" ile cokuyor. Hem alt hem ust
-    sinir kirpilir."""
+    `a` hem alt hem ust sinirdan kirpilir: cok yakin noktalarda yuvarlama
+    hatasi onu -1e-16 gibi negatif yapip sqrt'yi cokertiyordu."""
     p1 = math.radians(lat1)
     p2 = math.radians(lat2)
     dp = math.radians(lat2 - lat1)
@@ -84,13 +71,7 @@ def _dondur(x, y, aci_rad):
 
 
 def spacing_from_camera(altitude_m, fov_deg, overlap=0.3):
-    """Kamera gorus acisi ve istenen yan ortusmeden hat araligini bulur.
-
-        yer_genisligi = 2 * irtifa * tan(FOV / 2)
-        hat_araligi   = yer_genisligi * (1 - ortusme)
-
-    overlap 0.3 => komsu hatlar %30 ortusur.
-    """
+    """Hat araligi = 2 * irtifa * tan(FOV/2) * (1 - ortusme)."""
     if altitude_m <= 0:
         raise ValueError("Irtifa sifirdan buyuk olmali")
     if not 0 < fov_deg < 180:
@@ -107,8 +88,7 @@ def spacing_from_camera(altitude_m, fov_deg, overlap=0.3):
 
 
 def point_in_polygon(lat, lon, polygon):
-    """Isin (ray casting) yontemiyle nokta poligonun icinde mi?
-    polygon: [(lat, lon), ...] — kapali oldugu varsayilir."""
+    """Isin (ray casting) yontemiyle nokta poligonun icinde mi?"""
     if not polygon or len(polygon) < 3:
         return False
     icinde = False
@@ -141,8 +121,7 @@ def polygon_area_m2(polygon):
 
 
 def _yatay_kesisimler(yerel_poligon, y):
-    """y yuksekligindeki yatay dogrunun poligon kenarlariyla kesisim
-    x degerleri (sirali)."""
+    """y yuksekligindeki yatay dogrunun poligonla kesisim x'leri (sirali)."""
     kesisimler = []
     n = len(yerel_poligon)
     for i in range(n):
@@ -164,16 +143,8 @@ def _yatay_kesisimler(yerel_poligon, y):
 
 
 def survey_grid(polygon, spacing_m, angle_deg=0.0, margin_m=0.0):
-    """Poligonun icini tarayan gidis-donus rotasi uretir.
-
-    polygon   : [(lat, lon), ...] en az 3 nokta
-    spacing_m : komsu tarama hatlari arasi mesafe (metre)
-    angle_deg : hatlarin yonu (0 = dogu-bati, 90 = kuzey-guney)
-    margin_m  : poligon kenarindan iceri birakilan pay (metre)
-
-    Donus: [(lat, lon), ...] — ardisik hatlar TERS yonde gezilir, boylece
-    ucun hat sonunda geri donmesi gerekmez (boustrophedon).
-    """
+    """Poligonu tarayan gidis-donus rotasi; ardisik hatlar ters yonde
+    gezilir. angle_deg: 0 = dogu-bati, 90 = kuzey-guney."""
     if not polygon or len(polygon) < 3:
         raise ValueError("Tarama alani icin en az 3 nokta gerekli")
     if spacing_m <= 0:
@@ -182,17 +153,17 @@ def survey_grid(polygon, spacing_m, angle_deg=0.0, margin_m=0.0):
     lat0, lon0 = centroid(polygon)
     aci = math.radians(angle_deg)
 
-    # Poligonu, tarama hatlari YATAY olacak sekilde dondur.
+    # Tarama hatlari YATAY olacak sekilde dondur.
     yerel = [to_local(p[0], p[1], lat0, lon0) for p in polygon]
     donuk = [_dondur(x, y, -aci) for x, y in yerel]
 
     y_degerleri = [p[1] for p in donuk]
     y_min, y_max = min(y_degerleri) + margin_m, max(y_degerleri) - margin_m
     if y_max <= y_min:
-        # Alan, birakilan paydan dar: tek bir orta hat dene.
+        # Alan paydan dar: tek orta hat.
         y_min = y_max = (min(y_degerleri) + max(y_degerleri)) / 2.0
 
-    # Ilk hat kenardan yarim aralik iceride baslar: kenar seridi de taranir.
+    # Ilk hat yarim aralik iceride: kenar seridi de taranir.
     hatlar = []
     y = y_min + spacing_m / 2.0
     if y > y_max:
@@ -210,10 +181,8 @@ def survey_grid(polygon, spacing_m, angle_deg=0.0, margin_m=0.0):
         y += spacing_m
 
     if not hatlar:
-        # Buraya iki sekilde dusulur: kenar payi alani tamamen yemistir ya da
-        # poligon dejenere (sifir alanli) bir sekildir. Hat araliginin
-        # alandan buyuk olmasi hata DEGILDIR — o durumda yukarida tek bir
-        # orta hat uretilir, cunku genis bir tarama seridi tek gecisle kapanir.
+        # Kenar payi alani tamamen yemis veya poligon dejenere. Hat araliginin
+        # alandan buyuk olmasi hata DEGILDIR; o durumda tek orta hat uretilir.
         raise ValueError(
             "Bu ayarlarla alana hic tarama hatti sigmiyor — "
             "kenar payini kucultun veya alani buyutun"
@@ -240,16 +209,8 @@ def survey_grid(polygon, spacing_m, angle_deg=0.0, margin_m=0.0):
 
 
 def expanding_square(center, spacing_m, legs=12, start_heading_deg=0.0):
-    """Merkezden disa dogru genisleyen kare arama deseni.
-
-    center            : (lat, lon) arama merkezi
-    spacing_m         : hat araligi (bacak uzunlugu artis birimi)
-    legs              : bacak sayisi
-    start_heading_deg : ilk bacagin yonu (0 = kuzey, saat yonunde)
-
-    Bacak uzunluklari d, d, 2d, 2d, 3d, 3d ... seklinde artar ve her
-    bacakta 90 derece donulur. Havacilik/denizcilik arama standardi.
-    """
+    """Merkezden disa genisleyen kare arama deseni; bacaklar d, d, 2d, 2d,
+    3d ... seklinde artar, her bacakta 90 derece donulur."""
     if spacing_m <= 0:
         raise ValueError("Hat araligi sifirdan buyuk olmali")
     if legs < 1:

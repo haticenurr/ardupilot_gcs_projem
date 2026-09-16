@@ -245,16 +245,14 @@ class TelemetryWorker(QThread):
     def run(self):
         try:
             from core.drone_telemetry import DroneTelemetry
-            # iptal_kontrolu: stop() cagrildiginda heartbeat beklemesi
-            # aninda kesilir. Olmadan thread terminate ile oldurulur ve
-            # UDP soketi acik kalirdi.
+            # iptal_kontrolu olmadan stop() sirasinda thread terminate ile
+            # olduruluyor ve UDP soketi acik kaliyordu.
             self.drone = DroneTelemetry(
                 self.connection_string,
                 iptal_kontrolu=lambda: not self.is_running,
             )
             # Uzun mission/fence islemleri sirasinda yakalanan telemetri de
-            # ayni yoldan yayinlansin; aksi halde o saniyelerde arayuz donuk
-            # kaliyor ve heartbeat zaman asimi sahte alarm uretiyordu.
+            # ayni yoldan yayinlansin (yoksa arayuz donuyor, sahte alarm).
             self.drone.telemetry_sink = self._publish
             self._last_traffic = time.time()
             self.connection_status_signal.emit(True, "Baglanti basarili")
@@ -292,10 +290,8 @@ class TelemetryWorker(QThread):
                     self._lost_emitted = True
                     self.connection_status_signal.emit(False, "Zaman asimi: telemetri kesildi")
 
-                # DISARM durumdayken, PreArm mesajlarinin listede "canli"
-                # kalmasi icin 4 saniyede bir otopilottan kontrolleri
-                # yeniden calistirmasini istiyoruz (gercek ARM denemesi
-                # DEGIL, sadece kontrol sonucu STATUSTEXT'i tazeler).
+                # PreArm mesajlari listede "canli" kalsin diye 4 saniyede bir
+                # kontroller yeniden istenir (gercek ARM denemesi DEGIL).
                 now = time.time()
                 if (
                     self.drone
@@ -315,10 +311,8 @@ class TelemetryWorker(QThread):
                 self.drone = None
 
     def _publish(self, data):
-        """Telemetriyi GUI'ye ileten TEK nokta. Hem ana dongu hem de
-        DroneTelemetry'nin uzun protokol beklemeleri sirasinda yakaladigi
-        mesajlar buradan gecer; boylece 'son trafik' zamani ve toparlanma
-        bildirimi her iki yolda da ayni sekilde isler."""
+        """Telemetriyi GUI'ye ileten TEK nokta; ana dongu ve protokol
+        beklemeleri buradan gecer, boylece 'son trafik' ayni islenir."""
         self._last_traffic = time.time()
         if self._lost_emitted:
             self._lost_emitted = False
@@ -327,17 +321,15 @@ class TelemetryWorker(QThread):
         self.telemetry_signal.emit(data)
 
     def _arm_hata_sebebi(self, taban_mesaj: str) -> str:
-        """ARM basarisizligina, varsa otopilotun bildirdigi sebebi ekler.
-        Tek basina "ARM gerceklesmedi" kullaniciya ne yapacagini
-        soylemiyordu; asil bilgi PreArm STATUSTEXT'inde."""
+        """ARM hatasina otopilotun bildirdigi sebebi ekler; asil bilgi
+        PreArm STATUSTEXT'indedir."""
         if self._last_prearm_text and (time.time() - self._last_prearm_ts) < 15.0:
             return f"{taban_mesaj} — {self._last_prearm_text}"
         return taban_mesaj
 
     def _log_telemetry_error(self, exc):
-        """Telemetri hatalarini yutmak yerine raporlar. Dongu saniyede ~20
-        kez dondugu icin ayni hata en fazla 5 saniyede bir yazdirilir;
-        bastirilan tekrar sayisi bir sonraki satirda belirtilir."""
+        """Telemetri hatalarini yutmadan, ayni hata icin 5 saniyede bir
+        raporlar; bastirilan tekrar sayisi sonraki satirda belirtilir."""
         now = time.time()
         signature = f"{type(exc).__name__}: {exc}"
         if signature == self._last_error_sig and (now - self._last_error_ts) < 5.0:
@@ -1324,10 +1316,8 @@ class MainWindow(QMainWindow):
         self._style_badge(self.badge_flight_timer, f"SURE: {minutes:02d}:{seconds:02d}", "#a6e3a1")
 
     def _capture_flight_summary(self, duration_s: float):
-        """Biten ucusun istatistiklerini saklar ve 'SON UCUS OZETI' butonunu
-        aktiflestirir. Pencereyi ACMAZ: RTL/LAND sirasindaki kisa sureli,
-        gercek olmayan DISARM gorunumleri pilotun onune beklenmedik anda
-        pencere getiriyordu."""
+        """Ozeti saklar ve butonu aktiflestirir; pencereyi ACMAZ.
+        RTL/LAND sirasindaki sahte DISARM gorunumleri pencere aciyordu."""
         self._last_flight_summary = {
             "duration_s": duration_s,
             "max_alt": self._flight_max_alt or 0.0,
@@ -1456,8 +1446,7 @@ class MainWindow(QMainWindow):
             self.card_home_dist.set_value("--")
 
     def _on_flight_log_error(self, mesaj: str):
-        """Kaydedici bir disk/izin hatasi bildirdiginde cagrilir. Ucus
-        devam eder; yalnizca kayit tutulamaz."""
+        """Disk/izin hatasinda cagrilir; ucus devam eder, kayit tutulamaz."""
         self.event_log_panel.add_event(mesaj, success=False)
         self.show_transient_status(mesaj, 8000, success=False)
         self.voice.say(
@@ -1465,10 +1454,8 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_battery_cards(self):
-        """Akim / tuketilen / kalan sure kartlarini ve eve donus uyarisini
-        gunceller. Eksik veriyle tahmin URETILMEZ; bilinmeyen degerler
-        '--' kalir, cunku yanlis bir menzil tahmini pilota sahte guven
-        verir."""
+        """Pil kartlarini ve eve donus uyarisini gunceller. Eksik veriyle
+        tahmin URETILMEZ; bilinmeyen deger '--' kalir."""
         akim = self.battery_current_a
         self.card_current.set_value("--" if akim is None else f"{akim:.1f}")
 
@@ -1569,9 +1556,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_shortcuts(self):
-        """Acil durumda fare aramadan komut vermek icin. Onay pencereleri
-        KORUNUR — kisayol, komutu dogrudan degil, ilgili butonun normal
-        akisini tetikler."""
+        """Acil komutlar icin kisayollar; onay pencereleri KORUNUR."""
         tanimlar = [
             ("Ctrl+R", self.on_rtl_clicked, "RTL (eve don)"),
             ("Ctrl+L", self.on_land_clicked, "LAND (bulundugun yere in)"),

@@ -25,15 +25,8 @@ _MAV_CMD_NAV_WAYPOINT = 16
 
 
 def mission_to_waypoints(waypoints, home=None):
-    """Gorevi QGC WPL 110 metnine cevirir.
-
-    waypoints: [(lat, lon, alt), ...] — kullanicinin gordugu gercek noktalar
-    home: (lat, lon) veya None — bilinmiyorsa ilk waypoint'in konumu kullanilir
-
-    ArduPilot'ta satir 0 daima HOME'dur ve navigasyon icin yurutulmez;
-    gercek waypointler 1'den baslar. Bu, upload_mission()'daki seq=0
-    kuralinin dosya karsiligidir.
-    """
+    """Gorevi QGC WPL 110 metnine cevirir; satir 0 HOME'dur ve yurutulmez,
+    gercek waypointler 1'den baslar."""
     if not waypoints:
         raise ValueError("Disa aktarilacak waypoint yok")
 
@@ -70,9 +63,8 @@ def _wpl_satiri(index, current, frame, lat, lon, alt):
 
 
 def parse_waypoints(text):
-    """QGC WPL 110 metnini [(lat, lon, alt), ...] listesine cevirir.
-    Home satiri (index 0) atlanir. Disa aktarmanin dogrulugunu test etmek
-    ve baska GCS'ten gelen dosyayi okumak icin kullanilir."""
+    """QGC WPL 110 metnini [(lat, lon, alt), ...] listesine cevirir;
+    home satiri (index 0) atlanir."""
     satirlar = [s for s in (text or "").splitlines() if s.strip()]
     if not satirlar or not satirlar[0].startswith("QGC WPL"):
         raise ValueError("Gecersiz .waypoints dosyasi (QGC WPL basligi yok)")

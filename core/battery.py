@@ -3,15 +3,11 @@ battery.py
 -----------
 Pil hesaplari ve "eve donmeye pil yeter mi" tahmini.
 
-`SYS_STATUS.battery_remaining` yalnizca otopilotun yuzde tahminidir ve
-pil gerilimine gore hizla sicrar. `BATTERY_STATUS` ise anlik akimi ve
-harcanan mAh'i verir; gercek karar bunlarla verilir.
-
-Modul saf fonksiyonlardan olusur: Qt bilmez, MAVLink'e dokunmaz.
+Karar SYS_STATUS'un yuzde tahminiyle degil, BATTERY_STATUS'taki anlik
+akim ve harcanan mAh ile verilir; yuzde gerilime gore sicrar.
 """
 
-# Pilin tamamini harcamak pili kalici olarak yipratir ve inis icin pay
-# birakmaz. Eve donus hesabinda bu oran her zaman yedekte tutulur.
+# Inis payi ve pil sagligi icin her zaman yedekte tutulan oran.
 VARSAYILAN_YEDEK_ORANI = 0.20
 
 # Bu akimin altindaki degerler "bilinmiyor" sayilir (FC -1 bildirir).
@@ -28,10 +24,7 @@ def kalan_mah(kapasite_mah, tuketilen_mah):
 
 
 def kalan_ucus_suresi_s(kalan_mah_degeri, akim_a):
-    """Mevcut akim cekisiyle kac saniye daha ucabilir.
-
-    saat = kalan_mAh / (akim_A * 1000)  ->  saniye = saat * 3600
-    """
+    """Mevcut akimla kalan ucus suresi: (kalan_mAh / (A * 1000)) * 3600."""
     if kalan_mah_degeri is None or akim_a is None or akim_a <= GECERSIZ_AKIM:
         return None
     if akim_a <= 0:
@@ -47,21 +40,8 @@ def eve_donus_tahmini(
     yedek_orani=VARSAYILAN_YEDEK_ORANI,
     kapasite_mah=None,
 ):
-    """Eve donmek icin gereken enerjiyi ve yetip yetmeyecegini hesaplar.
-
-    Donus sozlugu:
-      sure_s        : eve donus suresi (saniye)
-      gereken_mah   : donus icin gereken enerji
-      yedek_mah     : inis/pay icin ayrilan miktar
-      kalan_mah     : donus sonrasi beklenen kalan
-      yeterli       : yedek dusuldukten sonra yetiyor mu
-      hesaplanabildi: girdiler yeterli miydi
-
-    Girdilerden biri bilinmiyorsa `hesaplanabildi=False` doner; arayuz
-    bu durumda tahmin yerine "--" gosterir. Eksik veriyle tahmin
-    uretmek, pilota yanlis guven verecegi icin bilincli olarak
-    yapilmiyor.
-    """
+    """Eve donus enerjisi ve yeterlilik. Eksik girdide hesaplanabildi=False
+    doner; yanlis menzil tahmini pilota sahte guven verir."""
     bos = {
         "sure_s": None,
         "gereken_mah": None,
@@ -98,8 +78,7 @@ def eve_donus_tahmini(
 
 
 def hucre_sayisi_tahmini(voltaj, hucre_basi_nominal=3.7):
-    """Paket gerilimine bakarak hucre sayisini (S) tahmin eder.
-    LiPo hucre araligi 3.0-4.35 V oldugu icin tahmin genelde nettir."""
+    """Paket geriliminden hucre sayisi (S); LiPo araligi 3,0-4,35 V."""
     if not voltaj or voltaj <= 0:
         return None
     tahmin = round(voltaj / hucre_basi_nominal)

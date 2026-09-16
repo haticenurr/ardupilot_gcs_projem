@@ -412,10 +412,8 @@ class CalibrationDialog(QDialog):
             self._adim_goster(self._accel_adim)
 
     def on_accel_position_request(self, data: dict):
-        """FC'nin COMMAND_LONG / MAV_CMD_ACCELCAL_VEHICLE_POS istegi.
-
-        Ivmeolcer kalibrasyonunda pozisyonun ASIL bildirim kanali budur;
-        param1 istenen pozisyonu (1..6) ya da sonucu tasir."""
+        """FC'nin pozisyon istegi (ASIL kanal); param1 = pozisyon (1..6)
+        veya sonuc kodu."""
         if not self._accel_calisiyor:
             return
         pozisyon = int(data.get("position", 0))

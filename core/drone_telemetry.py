@@ -474,11 +474,9 @@ class DroneTelemetry:
         return None
 
     def _emit_side_telemetry(self, msg):
-        """Gorev/fence protokolu beklenirken gelen telemetri mesajlarini
-        yutmak yerine worker'a iletir. Bu olmadan uzun suren mission
-        upload/download islemleri boyunca arayuz saniyelerce donuyor, hatta
-        heartbeat zaman asimi dolup sahte 'baglanti kesildi' alarmi
-        caliyordu."""
+        """Protokol beklenirken gelen telemetriyi yutmak yerine worker'a
+        iletir; aksi halde uzun mission islemlerinde arayuz donuyor ve
+        heartbeat zaman asimi sahte 'baglanti kesildi' alarmi veriyordu."""
         if self.telemetry_sink is None:
             return
         try:
@@ -490,8 +488,7 @@ class DroneTelemetry:
             self.telemetry_sink(data)
 
     def _recv_match_pumped(self, types, timeout):
-        """recv_match(blocking=True) yerine kullanilir: beklenen mesaj
-        turlerinden biri gelene kadar bekler, bu sirada gelen telemetriyi
+        """Beklenen mesaj gelene kadar bekler; bu sirada telemetriyi
         _emit_side_telemetry ile akitmaya devam eder."""
         if isinstance(types, str):
             types = [types]
@@ -508,11 +505,8 @@ class DroneTelemetry:
             self._emit_side_telemetry(msg)
 
     def _drain_pending(self):
-        """Onceki islemlerden kalan ACK artiklarini temizler. Eski kod bunu
-        recv_match(blocking=False) dongusuyle yapiyordu; pymavlink tur
-        filtresine uymayan mesajlari da tukettigi icin o dongu telemetriyi
-        de siliyordu. Burada telemetri ileri gonderilir, yalnizca protokol
-        artiklari dusurulur."""
+        """Kalan ACK artiklarini temizler; telemetri ileri gonderilir.
+        Duz recv_match dongusu tur filtresine uymayanlari da tuketiyordu."""
         while True:
             msg = self.master.recv_match(blocking=False)
             if msg is None:
@@ -646,14 +640,8 @@ class DroneTelemetry:
         )
 
     def upload_mission(self, waypoints):
-        """
-        NOT (onemli): ArduPilot mission protokolunde seq=0 daima 'home'
-        slotudur; FC bunu gercek bir nav komutu olarak yurutmez, AUTO
-        moda girildiginde otomatik atlanir. Bu yuzden gonderilen ilk
-        gercek waypoint (kullanicinin tablo/haritadaki 1. noktasi)
-        seq=1'e yazilmalidir, seq=0'a degil. Bunu atlarsak drone her
-        zaman 2. noktadan baslar ve 1. noktaya hic ugramaz.
-        """
+        """Gorevi FC'ye yukler. seq=0 'home' slotudur ve yurutulmez; ilk
+        gercek waypoint seq=1'e yazilir, yoksa arac 1. noktaya ugramaz."""
         if not waypoints:
             return False, "Waypoint listesi bos"
 
@@ -698,10 +686,8 @@ class DroneTelemetry:
                     continue
 
                 if seq == 0:
-                    # Home rezerve slotu: FC gercek home konumunu zaten biliyor
-                    # (HOME_POSITION), burada gonderilen koordinat sadece
-                    # protokol geregi bir yer tutucudur ve FC tarafindan
-                    # navigasyon icin kullanilmaz.
+                    # Home rezerve slotu: FC gercek home'u zaten biliyor,
+                    # buradaki koordinat yalnizca protokol yer tutucusudur.
                     self.master.mav.mission_item_int_send(
                         self.master.target_system,
                         self.master.target_component,
@@ -831,15 +817,9 @@ class DroneTelemetry:
             return False, f"Gorev temizleme hatasi: {e}"
 
     def _upload_mission_type(self, count, mission_type, item_gonder, ad):
-        """Mission protokolunun ortak yukleme dongusu.
-
-        Gorev, poligon fence ve rally noktalari AYNI protokolu kullanir;
-        yalnizca mission_type ve gonderilen item farklidir. Dongu tek
-        yerde durursa, telemetri akitma (_recv_match_pumped) ve deneme
-        siniri gibi davranislar ucunde de ayni olur.
-
-        item_gonder(seq): istenen sirayi FC'ye gonderen fonksiyon.
-        """
+        """Gorev, fence ve rally icin ortak yukleme dongusu; yalnizca
+        mission_type ve gonderilen item degisir. item_gonder(seq) istenen
+        sirayi FC'ye gonderir."""
         self.master.mav.mission_clear_all_send(
             self.master.target_system, self.master.target_component, mission_type
         )
@@ -872,8 +852,7 @@ class DroneTelemetry:
         return False, f"Cok fazla deneme yapildi, {ad} tamamlanamadi"
 
     def _download_mission_type(self, mission_type, komut, ad):
-        """Mission protokolunun ortak indirme dongusu.
-        Donus: (ok, mesaj, [MISSION_ITEM_INT, ...])"""
+        """Ortak indirme dongusu. Donus: (ok, mesaj, [MISSION_ITEM_INT, ...])"""
         self._drain_pending()
         self.master.mav.mission_request_list_send(
             self.master.target_system, self.master.target_component, mission_type
@@ -932,12 +911,8 @@ class DroneTelemetry:
             return False, f"{ad} silme hatasi: {e}"
 
     def upload_rally_points(self, points):
-        """Acil inis (rally) noktalarini FC'ye yukler.
-
-        points: [(lat, lon, alt), ...]. Failsafe tetiklendiginde ArduPilot,
-        eve donmek yerine EN YAKIN rally noktasina gidebilir; bu yuzden
-        noktalarin gercekten inise uygun yerler olmasi gerekir.
-        """
+        """Acil inis (rally) noktalarini FC'ye yukler. Failsafe'te arac eve
+        degil EN YAKIN rally noktasina gidebilir."""
         if not points:
             return False, "En az 1 rally noktasi gerekli"
 

@@ -143,8 +143,10 @@ PARCALAR = [
              + parca_cikar("core/drone_telemetry.py", "_drain_pending")),
     (8, "telemetri_is_parcacigi",
      lambda: parca_cikar("main_v7.py", "run", azami_satir=48)),
+    # Modul aciklamasi (v1/v2 imza karsilastirmasi) dosyada kalir ama
+    # gorsele alinmaz; gorselde yalnizca calisan kod gorunsun.
     (9, "mavlink2_diyalekt_secimi",
-     lambda: dosya_cikar("core/mavlink_env.py")),
+     lambda: dosya_cikar("core/mavlink_env.py", bas_satir=18)),
     (10, "waypoints_disa_aktarma",
      lambda: parca_cikar("core/exporters.py", "mission_to_waypoints")),
     (11, "kalibrasyon_pozisyon_kanali",

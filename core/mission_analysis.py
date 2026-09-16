@@ -1,20 +1,15 @@
 """
 mission_analysis.py
 --------------------
-Gorev drona YUKLENMEDEN once yapilan onizleme ve guvenlik analizi.
+Gorev yuklenmeden once onizleme ve guvenlik analizi.
 
-Amac: pilotun "yukle" demeden once gorevin ne kadar surecegini, ne kadar
-uzaga gidecegini ve bir guvenlik sinirini ihlal edip etmedigini gormesi.
-Bir waypoint'i yanlislikla geofence disina koymak, ucus sirasinda
-failsafe tetiklendiginde anlasilan turden bir hatadir; burada once
-yakalanir.
-
-Modul saf fonksiyonlardan olusur: Qt bilmez, MAVLink'e dokunmaz.
+Geofence disina konmus bir waypoint normalde ancak ucus sirasinda
+failsafe tetiklendiginde anlasilir; burada once yakalanir.
 """
 
 from core.mission_planner import haversine_m, point_in_polygon
 
-# Bu mesafeden yakin ardisik noktalar, muhtemelen yanlis tiklamadir.
+# Bu mesafeden yakin ardisik noktalar muhtemelen yanlis tiklamadir.
 YAKIN_NOKTA_ESIGI_M = 3.0
 
 # Varsayilan seyir hizi (ArduCopter WPNAV_SPEED varsayilani 5 m/s).
@@ -29,18 +24,8 @@ def _uyari(seviye, metin):
 
 
 def analyze_mission(waypoints, home=None, speed_ms=VARSAYILAN_HIZ_MS, fence=None):
-    """Gorevi olcer ve guvenlik ihlallerini listeler.
-
-    waypoints : [(lat, lon, alt), ...]
-    home      : (lat, lon) — bilinmiyorsa None
-    speed_ms  : seyir hizi (m/s)
-    fence     : {"enabled": bool, "radius_m": float, "alt_max_m": float,
-                 "polygon": [(lat, lon), ...]} — hepsi opsiyonel
-
-    Donus: olcumler ve `uyarilar` listesi iceren sozluk. Uyarilar
-    {"seviye": "hata"|"uyari", "metin": str} bicimindedir; "hata"
-    seviyesi yuklemeden once mutlaka gozden gecirilmelidir.
-    """
+    """Gorevi olcer ve guvenlik ihlallerini listeler; `uyarilar` ogeleri
+    {"seviye": "hata"|"uyari", "metin": str} bicimindedir."""
     fence = fence or {}
     uyarilar = []
 
