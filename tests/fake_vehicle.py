@@ -221,6 +221,27 @@ class FakeVehicle:
             -1 if kalan_yuzde is None else int(kalan_yuzde),
         )
 
+    def send_vfr_hud(self, groundspeed=6.4, heading=137, alt=25.0, throttle=48, climb=0.4):
+        """Yer hizi, yon ve gaz yuzdesi."""
+        self.conn.mav.vfr_hud_send(
+            float(groundspeed), float(groundspeed), int(heading),
+            int(throttle), float(alt), float(climb),
+        )
+
+    def send_gps_raw(self, satellites=12, fix_type=3):
+        """GPS uydu sayisi ve kilit turu (3 = 3D fix)."""
+        self.conn.mav.gps_raw_int_send(
+            int(time.time() * 1e6), int(fix_type),
+            int(39.925533 * 1e7), int(32.866287 * 1e7),
+            100000, 120, 150, 0, 0, int(satellites),
+        )
+
+    def send_home_position(self, lat=39.925533, lon=32.866287, alt_m=100.0):
+        self.conn.mav.home_position_send(
+            int(lat * 1e7), int(lon * 1e7), int(alt_m * 1000),
+            0.0, 0.0, 0.0, [1.0, 0.0, 0.0, 0.0], 0.0, 0.0, 0.0,
+        )
+
     def send_radio_status(self, rssi=200, remrssi=180, noise=20, remnoise=25, rxerrors=0):
         """Telemetri radyosunun sinyal raporu. SITL bunu uretmez; gercek
         SiK radyolarda saniyede bir gelir."""
